@@ -1,0 +1,14 @@
+{
+  "id": "galar_gmax_dex",
+  "name": "G9-National Dex",
+  "version": "0.1.0",
+  "entry": "main.lua",
+  "api": 2,
+  "profile": "content",
+  "category": "GAMEPLAY",
+  "permissions": ["engine_internals"],
+  "options_schema": "options.lua",
+  "dependencies": ["modern_type_framework"],
+  "optional_dependencies": ["dynamax", "DRAMATIC_SHAPE", "overworld_wild_spawns", "gen1_modern_ui", "FOLLOWERS_EX"],
+  "description": "Phase 1: registers the 51 non-native species needed for the 34 Gigantamax-capable Pokemon and their evolution lines (species, evolutions, typing). Movepools, Gigantamax forms/moves and battle sprites are later phases."
+}
