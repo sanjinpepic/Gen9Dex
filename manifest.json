@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "entry": "main.lua",
   "api": 2,
+  "game_version": ">=0.1.45",
   "profile": "content",
   "category": "GAMEPLAY",
   "permissions": ["engine_internals"],
