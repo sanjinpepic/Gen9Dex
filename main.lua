@@ -1549,6 +1549,38 @@ local function installDebugOptions(mod)
 end
 
 return function(mod)
+  -- src.pokemon.ModernStats / src.pokemon.MoveCategory used to be files
+  -- hand-added directly to the engine tree (src/pokemon/), because a
+  -- normal require("src.pokemon.X") only ever resolves against the
+  -- running game's OWN src/ tree, never a mod's sandboxed folder -- that
+  -- worked fine against this project's own dev checkout, but meant the
+  -- mod silently depended on an engine fork: a stock/release build (no
+  -- hand-added files) crashed on the very first require(), confirmed live
+  -- ("module 'src.pokemon.ModernStats' not found"). The engine tree is
+  -- meant to stay stock -- both files now live here instead
+  -- (engine_modern_stats.lua/engine_move_category.lua) and get registered
+  -- into package.preload before anything else runs, so every existing
+  -- require("src.pokemon.ModernStats")/require("src.pokemon.MoveCategory")
+  -- call site -- this mod's own files, and save_scrub.lua's
+  -- SaveData.validate wrap -- keeps working completely unchanged, and Lua
+  -- resolves them from OUR bundled copy instead of ever touching the
+  -- engine's own src/pokemon/ directory. package.preload is checked
+  -- before the filesystem search on every require() (confirmed by the
+  -- crash's own error text: "no field package.preload[...]" was already
+  -- the first thing Lua reported trying).
+  if not package.preload["src.pokemon.ModernStats"] then
+    package.preload["src.pokemon.ModernStats"] = function()
+      return loadSibling(mod, "engine_modern_stats.lua")
+    end
+  end
+  if not package.preload["src.pokemon.MoveCategory"] then
+    package.preload["src.pokemon.MoveCategory"] = function()
+      return loadSibling(mod, "engine_move_category.lua")
+    end
+  end
+  local installSaveScrub = loadSibling(mod, "save_scrub.lua")
+  installSaveScrub(mod)
+
   -- Registered unconditionally, before the species-registration gate
   -- below: the options screen is a completely independent concern from
   -- whether modern_type_framework happens to be loaded, and should still
