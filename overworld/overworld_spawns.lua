@@ -208,6 +208,40 @@ return function(mod)
     return nil
   end
 
+  -- Fallback tier, both first and last resort, explicit user instruction:
+  -- when a species has no lossless overworld art of its own (an asset-
+  -- free build, or simply not one of the ~1403 species this pack covers),
+  -- show CYNDAQUIL's real registered battle-front sprite instead of
+  -- jumping straight to the generic native walker sheet. Deliberately a
+  -- BATTLE pose, not a walk-cycle -- there is no native overworld-walker
+  -- convention to fall back to at all (confirmed: no "SPRITE_CYNDAQUIL"
+  -- or any per-species overworld sprite id exists anywhere in the native
+  -- SPRITE_* roster, grepped tools/rom_manifest_gold.json directly --
+  -- only a small hand-picked set of species, e.g. SPRITE_PIKACHU, have a
+  -- native overworld-walker asset at all, and Cyndaquil isn't one of
+  -- them). mod.content.pokemon:get("CYNDAQUIL").spriteFront is,
+  -- deliberately, the SAME already-resolved battle sprite the priority
+  -- chain in main.lua's reapplySpritePacks produces -- Cyndaquil is
+  -- vanilla-native, so that chain guarantees this is always a REAL,
+  -- non-placeholder sprite (this mod's own art if present, otherwise the
+  -- cart's own real native sprite, never our generic "000" placeholder --
+  -- confirmed by that same chain's own vanilla-preservation fix). Loaded
+  -- and cached once, not re-resolved per frame.
+  local cyndaquilFallbackImage, cyndaquilFallbackTried = nil, false
+  local function loadCyndaquilFallback()
+    if cyndaquilFallbackTried then return cyndaquilFallbackImage end
+    cyndaquilFallbackTried = true
+    local ok, def = pcall(function() return mod.content.pokemon:get("CYNDAQUIL") end)
+    local path = ok and def and def.spriteFront
+    if not path then return nil end
+    local okImg, img = pcall(love.graphics.newImage, path)
+    if okImg and img then
+      img:setFilter("nearest", "nearest")
+      cyndaquilFallbackImage = img
+    end
+    return cyndaquilFallbackImage
+  end
+
   -- Explicit on-screen display height, not the source file's own pixel
   -- size. Explicit user decision after seeing the 1:1-pixel draw come out
   -- oversized (64x64 native crops drawn at literal native size, 4x a
@@ -272,6 +306,10 @@ return function(mod)
         local img = loadOverworldImage(self.ggdSpecies, suffix)
         if not img and suffix ~= "" then
           img = loadOverworldImage(self.ggdSpecies, "")
+          mirror = false
+        end
+        if not img then
+          img = loadCyndaquilFallback()
           mirror = false
         end
         if not img then return false end
@@ -351,6 +389,10 @@ return function(mod)
       -- the generated roster, but never worse than the old single-frame
       -- behavior): fall back to the base down/front crop.
       img = loadOverworldImage(self.ggdSpecies, "")
+      mirror = false
+    end
+    if not img then
+      img = loadCyndaquilFallback()
       mirror = false
     end
     if not img then

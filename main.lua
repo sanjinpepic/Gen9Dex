@@ -573,11 +573,14 @@ local function installSpriteAssetPacks(mod, spritePackRosterFull, frameCounts, n
   -- decision this session -- players supply their own art via national_dex
   -- or another sprite pack; this mod ships no bundled Pokemon art). Was
   -- previously real PICHU art (an earlier, narrower "layer 0 failsafe"
-  -- call) -- superseded by this explicit rename/generic-asset instruction;
-  -- assets/front|back/000/001.png are a direct copy of national_dex's own
-  -- placeholder art (assets/sets/placeholder/front.png/back.png, a real,
-  -- generic, already-trusted "no sprite" convention), not new art authored
-  -- here.
+  -- call), then briefly a direct copy of national_dex's own placeholder
+  -- art -- that copy is confirmed to crash on mobile (root cause not
+  -- chased down; explicit user call was to replace it outright rather
+  -- than debug it). assets/front|back/000/001.png are now a minimal,
+  -- self-generated 16x16 white square with a black X, deliberately the
+  -- simplest possible valid PNG (a plain uncompressed bitmap via
+  -- System.Drawing, no unusual palette/interlacing/metadata) to remove
+  -- whatever about the national_dex asset's own format was mobile-hostile.
   local PLACEHOLDER_FAILSAFE = {
     spriteFront = builtinFramePath(mod, "front", "000", 1),
     spriteBack = builtinFramePath(mod, "back", "000", 1),
