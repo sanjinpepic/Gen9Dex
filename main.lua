@@ -907,7 +907,16 @@ local function installSpriteAnimation(mod, playerSpriteSide)
   end
 
   local function updateBattler(battler, side)
-    local mon = battler and battler.mon
+    -- battler.mon wins when present (Gen 1's real shape: battle.player/
+    -- .enemy are battler WRAPPERS around a mon, confirmed via
+    -- src/battle/BattleState.lua). Gen 2 has no such wrapper -- confirmed
+    -- directly (src/battle/gen2/Battle.lua's own comment: "`battler` is
+    -- the mon itself here: Gen 2's engine has no battler wrapper") -- so
+    -- battle.player/.enemy there ARE the mon already, and this falls
+    -- through to `battler` itself. Zero change for Gen 1 (.mon is always
+    -- present and always wins); newly correct for Gen 2, which previously
+    -- read battler.mon as nil here and silently no-opped every call.
+    local mon = battler and (battler.mon or battler)
     local speciesId = mon and mon.species
     local sprite = speciesId and mod.exports.resolveSpritePack(speciesId)
     local total = sprite and sprite.frameCounts and sprite.frameCounts[side]
@@ -1010,16 +1019,43 @@ local function installSpriteAnimation(mod, playerSpriteSide)
   -- shrink sequence) can keep sprite frame-cycling running independently
   -- instead of it silently stopping for as long as their overlay owns the
   -- frame -- confirmed live: both did exactly that before this existed.
-  local function advanceBattleSprites(battle, dt)
+  --
+  -- gameOverride: optional 3rd arg, additive, existing 2-arg callers
+  -- unaffected. Gen 1's own "battle" here IS the BattleState UI instance
+  -- (battle.game already a real field, confirmed -- this is how the
+  -- feature worked at all before Gen 2 existed), but Gen 2's callers pass
+  -- the pure src.battle.gen2.Battle object, which carries no .game field
+  -- of its own at all (checked directly, no match) -- without an
+  -- override, logicToReal's game-speed-up protection -- the actual point
+  -- of this whole feature -- would silently do nothing on Gen 2 even with
+  -- every other piece wired correctly. Gen 2 callers pass their own
+  -- Gen2BattleState UI instance's .game (self.game) here instead.
+  --
+  -- forcePause: optional 4th arg, additive, same reasoning. shouldPauseAnim
+  -- itself is deliberately untouched (its self:fxFaintActive/self.picFx
+  -- checks are Gen 1 BattleState concepts that simply don't exist on a
+  -- pure Gen 2 Battle object -- confirmed no match for either name
+  -- anywhere in src/battle/gen2/Battle.lua -- so for a Gen 2 battle that
+  -- check already silently answers false always, a dead check rather than
+  -- a wrong one). Gen 2 has the exact same size-dependent-reveal
+  -- fragility shouldPauseAnim exists to guard against (src/ui/gen2/
+  -- BattleState.lua's own BattleState:drawPic reads image:getDimensions()
+  -- fresh every frame for its own resize/slide effect math, same pattern
+  -- that caused Gen 1's leg-flickering bug), just tracked under a
+  -- different name (self.anim on the Gen2BattleState UI instance, not the
+  -- pure Battle object either) -- so its caller passes that in directly
+  -- instead of this function needing to know Gen 2's shape.
+  local function advanceBattleSprites(battle, dt, gameOverride, forcePause)
     if mod.options:get("animated_battle_sprites") == "false" then return end
+    local game = gameOverride or battle.game
     if battle.player and not battle.showPlayerBack and not battle.sendingOut
-        and not shouldPauseAnim(battle, battle.player) then
+        and not forcePause and not shouldPauseAnim(battle, battle.player) then
       local playerSide = playerSpriteSide.wantsPlayerFront() and "front" or "back"
-      advance(battle.player, playerSide, dt, battle.game)
+      advance(battle.player, playerSide, dt, game)
     end
     if battle.enemy and not battle.showEnemyTrainer and not battle.enemySendingOut
-        and not shouldPauseAnim(battle, battle.enemy) then
-      advance(battle.enemy, "front", dt, battle.game)
+        and not forcePause and not shouldPauseAnim(battle, battle.enemy) then
+      advance(battle.enemy, "front", dt, game)
     end
   end
   mod.exports.advanceBattleSprites = advanceBattleSprites
@@ -1038,6 +1074,56 @@ local function installSpriteAnimation(mod, playerSpriteSide)
   end
   mod.events:on("battle.battler_switched", function(ev) clearAnim(ev and ev.battle) end)
   mod.events:on("battle.ended", function(ev) clearAnim(ev and ev.battle) end)
+
+  -- Gen 2 render-side hookup -- IMPERATIVE this stays additive-only, never
+  -- touching how Gen 1 or the existing static registration already work.
+  -- Confirmed by direct source read (src/ui/gen2/BattleState.lua):
+  -- Gen 2 has NO per-battler mutable .sprite field its own draw code ever
+  -- reads. BattleState:pic(mon, back) resolves def.spriteFront/spriteBack
+  -- FRESH from the species registration on every single draw call
+  -- (BattleState:drawPic calls self:pic every frame), through the
+  -- "pokemon.sprite" hook -- the exact same hook name/ctx shape Gen 1's
+  -- own src/pokemon/Sprites.lua:path uses, per that function's own
+  -- comment: "one subscription reskins both games". So the battler.sprite
+  -- mutation updateBattler/advance already do above is INERT for Gen 2 --
+  -- harmless (confirmed no existing Gen 2 mon-record field named "sprite"
+  -- it could collide with: checked src/pokemon/Pokemon.lua and
+  -- src/battle/gen2/Battle.lua directly, neither references one) but does
+  -- nothing on screen by itself. This hook is what actually makes Gen 2
+  -- show it: given the SAME per-mon state updateBattler/advance already
+  -- maintain (battler.__galarAnim -- Gen 2's battler IS the mon, no
+  -- wrapper, per the fix just above), it returns that state's current
+  -- frame's path instead of the default whenever one is tracked --
+  -- leaving ctx.trueColor (what actually gates GBC palette remapping --
+  -- the exact regression risk this whole feature was flagged against)
+  -- completely untouched, never read or written here at all.
+  --
+  -- Gated behind isGen2Boot so this hook is never even REGISTERED on a
+  -- Gen 1 boot -- not just inert, structurally absent -- zero interaction
+  -- with Gen 1's existing, already-shipped animation path. Further scoped
+  -- tight even on Gen 2: ctx.kind == "battle" only (this same hook also
+  -- answers Pokedex/party/summary-screen calls for their own static,
+  -- non-animated resolution -- never touch those), and the tracked
+  -- state's own species+side must match what's actually being asked for
+  -- right now, so a stale or switched-out state can never leak onto the
+  -- wrong pic. Any failure pcalls back to the untouched default path,
+  -- same fail-open convention as every other resolver in this file.
+  local GameVersion = require("src.core.GameVersion")
+  local isGen2Boot = GameVersion.generation(GameVersion.get()) == 2
+  if isGen2Boot then
+    mod.hooks:wrap("pokemon.sprite", function(next, path, ctx)
+      local ok, framePath = pcall(function()
+        if not (ctx and ctx.kind == "battle" and ctx.mon) then return nil end
+        local state = ctx.mon.__galarAnim
+        if not (state and state.frame and state.frame > 1) then return nil end
+        if state.species ~= ctx.mon.species or state.side ~= ctx.side then return nil end
+        local sprite = mod.exports.resolveSpritePack(state.species)
+        if not (sprite and sprite.framePath) then return nil end
+        return sprite.framePath(state.side, state.frame)
+      end)
+      return next((ok and framePath) or path, ctx)
+    end)
+  end
 
   -- animated_battle_sprites is defined once, for the whole mod, in
   -- options.lua (loaded/defined by installDebugOptions) -- see that
@@ -1988,36 +2074,6 @@ local function installDebugOptions(mod)
 end
 
 return function(mod)
-  -- Gen 2 engine bug, confirmed by directly reading gen1recomp-dev's own
-  -- src/mods/ManagerState.lua + src/core/Game2.lua (not anything in this
-  -- mod, national_dex, or any mod we own): ManagerState:persistOptions()
-  -- only ever calls self.game:writeOptions() -- a method Game (Gen 1)
-  -- defines directly, but Game2 never does (only Game2:persistOptions, a
-  -- different name). Game2:openStartMenuItem's "mods" entry hands
-  -- ManagerState the RAW Game2 instance, not the Gen2Compat-faced proxy
-  -- that would have bridged the name gap -- so on every Gen 2 boot,
-  -- changing ANY mod's per-mod option (choice/toggle/number) from the
-  -- in-game Mod Manager silently never reaches disk: the in-memory change
-  -- is correct for that session, then reverts to whatever was last
-  -- actually written, every single exit. Confirmed root cause of
-  -- national_dex's MOVES option always reverting to GEN-NATIVE on Gen 2,
-  -- both PC and Android -- a pure logic gap, not storage flakiness, so
-  -- it's platform-independent and not specific to that one option.
-  --
-  -- Aliasing the missing method fixes it for every mod's options on Gen 2,
-  -- not just national_dex's. pcall-guarded since Game2 is only even a
-  -- real module on a Gen 2 boot; idempotent (checks not already present)
-  -- so this is safe however many mods end up shipping the same patch.
-  -- Deliberate, explicit-instruction desync: this patch lives ONLY in
-  -- this public repo, NOT in the local GalarGmaxDex dev copy.
-  do
-    local ok, Game2 = pcall(require, "src.core.Game2")
-    if ok and type(Game2) == "table" and not Game2.writeOptions
-        and type(Game2.persistOptions) == "function" then
-      Game2.writeOptions = Game2.persistOptions
-    end
-  end
-
   -- src.pokemon.ModernStats / src.pokemon.MoveCategory used to be files
   -- hand-added directly to the engine tree (src/pokemon/), because a
   -- normal require("src.pokemon.X") only ever resolves against the

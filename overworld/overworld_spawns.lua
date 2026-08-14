@@ -187,17 +187,33 @@ return function(mod)
   -- matches this mod's existing native-format convention of right =
   -- mirrored left, e.g. SpriteRenderer's own WALK/STAND tables). Confirmed
   -- the source sheet's row layout by opening a couple of samples directly
-  -- (CHARMANDER.png, PIDGEY.png): row0=down, row1=left profile, row3=up;
-  -- gen_directional_overworld.ps1 (scratchpad) generated _up/_left crops
-  -- for the full 1403-species roster from that same layout.
-  local function loadOverworldImage(species, suffix)
-    local key = species .. (suffix or "")
+  -- (CHARMANDER.png, PIDGEY.png, PIKACHU.png): row0=down, row1=left
+  -- profile, row3=up -- a 4-column x 4-row grid, columns being 4 walk-
+  -- cycle frames. tools/generate_overworld_walkcycle.ps1 (successor to
+  -- the earlier scratchpad-only gen_full_roster_overworld.ps1/
+  -- gen_directional_overworld.ps1, whose row/column convention it reuses
+  -- exactly) sliced all 4 columns for the full 1403-species roster.
+  --
+  -- frame: 1-4, defaults to 1 -- column 0, the original single crop every
+  -- call site used before walk-cycle frames existed. Infixed BEFORE the
+  -- direction suffix (frame 1 has no infix at all, matching the pre-
+  -- existing on-disk names): <ID>.png/_2/_3/_4 (down),
+  -- <ID>_left.png/_2_left/_3_left/_4_left, same for _up. Species not
+  -- covered by the sliced roster (an asset-free build, or genuinely
+  -- outside the ~1403) simply have no frame >1 on disk and read as such
+  -- via the normal pcall existence check below -- no separate "does this
+  -- species have walk frames" concept, agnostic the same way frame 1
+  -- always was.
+  local FRAME_INFIX = { [1] = "", [2] = "_2", [3] = "_3", [4] = "_4" }
+  local function loadOverworldImage(species, suffix, frame)
+    local infix = FRAME_INFIX[frame or 1] or ""
+    local key = species .. infix .. (suffix or "")
     local cached = overworldImages[key]
     if cached ~= nil then
       if cached == false then return nil end
       return cached
     end
-    local path = mod.path .. "/" .. OVERWORLD_REL .. "/" .. species .. (suffix or "") .. ".png"
+    local path = mod.path .. "/" .. OVERWORLD_REL .. "/" .. species .. infix .. (suffix or "") .. ".png"
     local ok, img = pcall(love.graphics.newImage, path)
     if ok and img then
       img:setFilter("nearest", "nearest")
@@ -206,6 +222,63 @@ return function(mod)
     end
     overworldImages[key] = false
     return nil
+  end
+
+  -- How many contiguous walk-cycle frames actually exist for this
+  -- species+direction (1 for the "000" placeholder and anything else the
+  -- sliced roster doesn't cover, up to 4 for the full roster) -- probed
+  -- once and cached permanently, same "can't change mid-session" reasoning
+  -- as main.lua's own spriteFileExists cache. Frame-cycling below always
+  -- wraps against THIS count rather than assuming 4, so a 1-frame set
+  -- (the fallback tier) just always draws frame 1, no special-casing.
+  local frameCountCache = {}
+  local function frameCountFor(species, suffix)
+    local key = species .. (suffix or "")
+    local cached = frameCountCache[key]
+    if cached ~= nil then return cached end
+    local count = 0
+    for frame = 1, 4 do
+      if loadOverworldImage(species, suffix, frame) then
+        count = frame
+      else
+        break
+      end
+    end
+    frameCountCache[key] = count
+    return count
+  end
+
+  -- Walking: extends the native NPC:walkPhase()'s own convention
+  -- (src/world/NPC.lua:114-118, `self.progress % 16`, alternating 2
+  -- phases across one tile's traversal) to as many phases as this
+  -- species+direction actually has frames for, since our source art has
+  -- up to 4 walk frames per direction instead of the native sheet's 2.
+  -- 16 is not a guess -- it's the same constant walkPhase() itself reads.
+  local WALK_CYCLE_LENGTH = 16
+  local function walkFrame(self, frameCount)
+    if frameCount <= 1 then return 1 end
+    local p = (self.progress or 0) % WALK_CYCLE_LENGTH
+    local idx = math.floor(p / (WALK_CYCLE_LENGTH / frameCount)) + 1
+    return idx > frameCount and frameCount or idx
+  end
+
+  -- Idle: explicit user goal, "cycle and have idle movement for the same
+  -- side if they aren't walking" -- native walkPhase() answers a flat
+  -- frame 1 whenever not moving, no idle animation at all. No movement-
+  -- progress ticks exist for a standing entity to read, so this is driven
+  -- by wall-clock time instead, deliberately slower than the walk cycle
+  -- (a gentle idle sway, not a walk in place).
+  local IDLE_FPS = 3
+  local function idleFrame(frameCount)
+    if frameCount <= 1 then return 1 end
+    return math.floor(love.timer.getTime() * IDLE_FPS) % frameCount + 1
+  end
+
+  -- Frame index for the current facing, walking or idle -- shared by both
+  -- drawLossless (Gen 1) and drawLosslessGen2 below.
+  local function currentFrame(self, species, suffix)
+    local frameCount = frameCountFor(species, suffix)
+    return (self.moving and walkFrame(self, frameCount) or idleFrame(frameCount)), frameCount
   end
 
   -- Fallback tier, both first and last resort, explicit user instruction:
@@ -303,9 +376,11 @@ return function(mod)
         elseif facing == "right" then suffix, mirror = "_left", true
         else suffix = "" end
 
-        local img = loadOverworldImage(self.ggdSpecies, suffix)
+        local frame = currentFrame(self, self.ggdSpecies, suffix)
+        local img = loadOverworldImage(self.ggdSpecies, suffix, frame)
         if not img and suffix ~= "" then
-          img = loadOverworldImage(self.ggdSpecies, "")
+          frame = currentFrame(self, self.ggdSpecies, "")
+          img = loadOverworldImage(self.ggdSpecies, "", frame)
           mirror = false
         end
         if not img then
@@ -383,12 +458,14 @@ return function(mod)
     elseif facing == "right" then suffix, mirror = "_left", true
     else suffix = "" end
 
-    local img = loadOverworldImage(self.ggdSpecies, suffix)
+    local frame = currentFrame(self, self.ggdSpecies, suffix)
+    local img = loadOverworldImage(self.ggdSpecies, suffix, frame)
     if not img and suffix ~= "" then
       -- directional crop missing for this species (should not happen for
       -- the generated roster, but never worse than the old single-frame
       -- behavior): fall back to the base down/front crop.
-      img = loadOverworldImage(self.ggdSpecies, "")
+      frame = currentFrame(self, self.ggdSpecies, "")
+      img = loadOverworldImage(self.ggdSpecies, "", frame)
       mirror = false
     end
     if not img then
