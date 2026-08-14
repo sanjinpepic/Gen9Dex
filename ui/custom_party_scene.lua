@@ -48,8 +48,8 @@ return function(mod, Theme)
   local PartyMenu = require("src.ui.PartyMenu")
   local TypeChart = require("src.battle.TypeChart")
   local Stats = require("src.pokemon.Stats")
-  local ModernStats = require("src.pokemon.ModernStats")
-  local MoveCategory = require("src.pokemon.MoveCategory")
+  local ModernStats = mod.exports.ModernStats
+  local MoveCategory = mod.exports.MoveCategory
   local TextBox = require("src.render.TextBox")
   local Font = require("src.render.Font")
   local GameVersion = require("src.core.GameVersion")

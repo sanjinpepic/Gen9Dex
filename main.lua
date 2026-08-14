@@ -35,22 +35,24 @@
 -- Sibling-file loader: identical to kanto-ascendant's own main.lua
 -- loadSibling helper. mod:read() goes through the loader filesystem (so
 -- this works the same for an installed directory, a zip, or Modkit's
--- virtual validation FS) with a loadfile() fallback for a plain
--- filesystem entry point. Plain require() only resolves the engine's own
+-- virtual validation FS). Plain require() only resolves the engine's own
 -- src.* module tree, not a mod's own sibling files.
-local ENTRY_SOURCE = debug.getinfo(1, "S").source
-local ENTRY_DIR = ENTRY_SOURCE:sub(1, 1) == "@"
-  and ENTRY_SOURCE:sub(2):match("^(.*)/[^/]+$") or "."
-
+--
+-- Previously had a debug.getinfo(1, "S").source + loadfile() fallback
+-- for a plain filesystem entry point. Both debug and loadfile were
+-- removed from the mod sandbox in gen1recomp's Aug 2026 mod-sandboxing
+-- release ("grandmas kitchen") -- debug.getinfo alone threw
+-- unconditionally at load time (attempt to index global 'debug', a nil
+-- value), which is the fatal error this fix addresses. mod:read() was
+-- always the primary path and is confirmed sufficient on its own per
+-- this same comment's own claim above, so the fallback is dropped
+-- rather than reworked -- there is no sandboxed replacement for
+-- loadfile's own-arbitrary-path use, only for mod:read's own-folder one.
 local function loadSibling(mod, filename)
   local body, readErr = mod:read(filename)
-  local chunk, err
-  if body then
-    chunk, err = loadstring(body, "@" .. mod.path .. "/" .. filename)
-  elseif ENTRY_DIR then
-    chunk, err = loadfile(ENTRY_DIR .. "/" .. filename)
-  end
-  assert(chunk, err or readErr)
+  assert(body, readErr)
+  local chunk, err = loadstring(body, "@" .. mod.path .. "/" .. filename)
+  assert(chunk, err)
   return chunk()
 end
 
@@ -498,40 +500,31 @@ local function installSpriteAssetPacks(mod, spritePackRosterFull, frameCounts, n
   -- disk. A public build that ships this mod's code without its real
   -- sprite pack (asset-free release, this session) would otherwise
   -- commit dead paths straight into the registry with nothing catching
-  -- it. love.filesystem.getInfo is the lightweight check; pcall-guarded
-  -- since an earlier finding this session showed love.filesystem can
-  -- throw in this sandbox for directory-listing calls (getDirectoryItems)
-  -- -- unconfirmed whether getInfo on a single known path shares that
-  -- restriction, so a getInfo failure falls back to the proven existence
-  -- pattern already used elsewhere in this exact codebase (overworld_
-  -- spawns.lua's own pcall(love.graphics.newImage, path) check) rather
-  -- than assuming either one alone is safe.
+  -- it. love.filesystem is gone entirely from the mod sandbox as of
+  -- gen1recomp's Aug 2026 "grandmas kitchen" release -- confirmed (via
+  -- overworld_spawns.lua's own read of that branch's src/mods/Sandbox.lua)
+  -- that merely READING the .filesystem field off love throws, so a
+  -- love.filesystem.getInfo attempt here was never going to reach its own
+  -- pcall's protection; dropped entirely rather than attempted-then-
+  -- caught. Sole check is now the same proven pattern already used
+  -- elsewhere in this exact codebase (overworld_spawns.lua's own
+  -- pcall(love.graphics.newImage, path)) -- love.graphics itself is
+  -- unaffected by the sandbox, only love.filesystem/thread/system/event.
   -- Cached by path: installSpriteAnimation's own per-battler update loop
   -- calls mod.exports.resolveSpritePack every advancing frame (advance ->
   -- updateBattler, up to 60x/sec per active battler), not just once at
-  -- registration -- an uncached filesystem check here would be a real
-  -- per-frame I/O cost, not a one-off. A path's existence can't change
-  -- mid-session under normal play, so a permanent cache is safe (matches
-  -- the same never-invalidated imageCache pattern installSpriteAnimation's
-  -- own loadImage already uses for the actual frame loads).
+  -- registration -- an uncached check here would be a real per-frame I/O
+  -- cost, not a one-off. A path's existence can't change mid-session
+  -- under normal play, so a permanent cache is safe (matches the same
+  -- never-invalidated imageCache pattern installSpriteAnimation's own
+  -- loadImage already uses for the actual frame loads).
   local existsCache = {}
   local function spriteFileExists(path)
     if type(path) ~= "string" or path == "" then return false end
     local cached = existsCache[path]
     if cached ~= nil then return cached end
-    local fs = love and love.filesystem
-    local result
-    if not (fs and fs.getInfo) then
-      result = true
-    else
-      local ok, info = pcall(fs.getInfo, path)
-      if not ok then
-        local okImg, img = pcall(love.graphics.newImage, path)
-        result = okImg and img ~= nil
-      else
-        result = info ~= nil
-      end
-    end
+    local okImg, img = pcall(love.graphics.newImage, path)
+    local result = okImg and img ~= nil
     existsCache[path] = result
     return result
   end
@@ -2004,26 +1997,23 @@ return function(mod)
   -- hand-added files) crashed on the very first require(), confirmed live
   -- ("module 'src.pokemon.ModernStats' not found"). The engine tree is
   -- meant to stay stock -- both files now live here instead
-  -- (engine_modern_stats.lua/engine_move_category.lua) and get registered
-  -- into package.preload before anything else runs, so every existing
+  -- (engine_modern_stats.lua/engine_move_category.lua).
+  --
+  -- Previously registered into package.preload so every existing
   -- require("src.pokemon.ModernStats")/require("src.pokemon.MoveCategory")
-  -- call site -- this mod's own files, and save_scrub.lua's
-  -- SaveData.validate wrap -- keeps working completely unchanged, and Lua
-  -- resolves them from OUR bundled copy instead of ever touching the
-  -- engine's own src/pokemon/ directory. package.preload is checked
-  -- before the filesystem search on every require() (confirmed by the
-  -- crash's own error text: "no field package.preload[...]" was already
-  -- the first thing Lua reported trying).
-  if not package.preload["src.pokemon.ModernStats"] then
-    package.preload["src.pokemon.ModernStats"] = function()
-      return loadSibling(mod, "stats/engine_modern_stats.lua")
-    end
-  end
-  if not package.preload["src.pokemon.MoveCategory"] then
-    package.preload["src.pokemon.MoveCategory"] = function()
-      return loadSibling(mod, "combat/engine_move_category.lua")
-    end
-  end
+  -- call site kept working unchanged. package (all of it, not just
+  -- io/os/love.filesystem) was removed from the mod sandbox in
+  -- gen1recomp's Aug 2026 mod-sandboxing release ("grandmas kitchen") --
+  -- confirmed every consumer of these two require() calls is one of this
+  -- mod's OWN files (grepped the whole tree: no other mod or engine call
+  -- site references src.pokemon.ModernStats/MoveCategory), so this is
+  -- fully within our control to rewire. Replacement channel is
+  -- mod.exports -- the sandbox announcement's own explicit replacement
+  -- for "passing data to another mod/file through a global" -- loaded
+  -- once here (singleton, matching require()'s real caching semantics)
+  -- and read directly by every consumer instead of require(...).
+  mod.exports.ModernStats = mod.exports.ModernStats or loadSibling(mod, "stats/engine_modern_stats.lua")
+  mod.exports.MoveCategory = mod.exports.MoveCategory or loadSibling(mod, "combat/engine_move_category.lua")
   local installSaveScrub = loadSibling(mod, "stats/save_scrub.lua")
   installSaveScrub(mod)
 
@@ -2058,6 +2048,19 @@ return function(mod)
   -- above doesn't matter beyond happening after package.preload is set up.
   local installEvYieldOnFaint = loadSibling(mod, "stats/ev_yield_on_faint.lua")
   installEvYieldOnFaint(mod)
+
+  -- Confirmed real, previously-unfixed bug: national_dex never sets
+  -- baseExp on any species it registers, which floors EXP gain to
+  -- exactly 1 for every affected species (src/battle/Experience.lua's
+  -- own math.max(1, exp) floor) -- see reapply_national_dex_stats.lua's
+  -- own header for the full root-cause chain and the BST-approximation
+  -- this patches in. Runs here (species should already be registered by
+  -- national_dex, a hard dependency, by the time GalarGmaxDex's own
+  -- main.lua executes) and re-syncs on save.loaded/mod.options_changed,
+  -- explicit user instruction: "we need a reapply stats too."
+  local realBaseExpData = loadSibling(mod, "stats/base_exp_data.lua")
+  local installReapplyNationalDexStats = loadSibling(mod, "stats/reapply_national_dex_stats.lua")
+  installReapplyNationalDexStats(mod, realBaseExpData)
 
   -- Registered unconditionally, before the species-registration gate
   -- below: the options screen is a completely independent concern from

@@ -22,7 +22,7 @@
 -- the exact same case, so this mirrors an already-established engine
 -- precedent rather than special-casing around it.
 return function(mod)
-  local ModernStats = require("src.pokemon.ModernStats")
+  local ModernStats = mod.exports.ModernStats
   local ok, Gen2Battle = pcall(require, "src.battle.gen2.Battle")
   Gen2Battle = ok and Gen2Battle or nil
 

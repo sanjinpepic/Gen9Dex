@@ -21,8 +21,8 @@
 -- multiplier-slot chain, and a stage-based crit.
 return function(mod)
   local Runtime = require("src.mods.Runtime")
-  local MoveCategory = require("src.pokemon.MoveCategory")
-  local ModernStats = require("src.pokemon.ModernStats")
+  local MoveCategory = mod.exports.MoveCategory
+  local ModernStats = mod.exports.ModernStats
   local TypeChart = require("src.battle.TypeChart")
   local Stats = require("src.pokemon.Stats")
   local Status = require("src.battle.Status")

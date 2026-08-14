@@ -17,7 +17,7 @@
 -- scrubKnownMon directly.
 return function(mod)
   local SaveData = require("src.core.SaveData")
-  local ModernStats = require("src.pokemon.ModernStats")
+  local ModernStats = mod.exports.ModernStats
 
   if SaveData.galarSaveScrubHook then return end
   SaveData.galarSaveScrubHook = true

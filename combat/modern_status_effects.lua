@@ -53,7 +53,7 @@ return function(mod)
   local BattleState = require("src.battle.BattleState")
   local TrainerAI = require("src.battle.TrainerAI")
   local Status = require("src.battle.Status")
-  local ModernStats = require("src.pokemon.ModernStats")
+  local ModernStats = mod.exports.ModernStats
   local romText = require("src.core.RomText")
   local Strings = require("src.core.Strings")
 
