@@ -77,14 +77,33 @@ return function(mod, movesData)
   -- A move unknown to both sources is assumed usable: nothing to gate on,
   -- and refusing to teach a move neither side has an opinion about would
   -- be a worse failure mode than teaching it.
+  --
+  -- Confirmed real bug, live-reported and fixed here: this comment always
+  -- described native moves as "always fully implemented," but the code
+  -- below never actually checked for that -- it fell straight to
+  -- national_dex's gen1EffectModeled/gen2EffectModeled for EVERY move not
+  -- in our own data, native or not. That flag is national_dex's own
+  -- opinion about whether IT modeled a SECONDARY effect for a move IT
+  -- introduced -- irrelevant for a plain, no-secondary-effect native move
+  -- like Tackle or Ember, which the cart already fully implements with no
+  -- effect of its own to model at all. National_dex's own moveById()
+  -- exposes exactly the right signal for this (confirmed real field,
+  -- national_dex/src/api.lua: "engineMove (bool: is this one of the
+  -- cart's own moves)") -- checked FIRST, unconditionally usable when
+  -- true, before ever consulting the modeled flag (which only makes
+  -- sense for moves national_dex itself contributed).
   local function isUsable(moveId)
     if ourCompleteness[moveId] ~= nil then return ourCompleteness[moveId] end
     if ndModeledCache[moveId] ~= nil then return ndModeledCache[moveId] end
     local ok, info = pcall(ndExports.moveById, moveId)
     local modeled = true
     if ok and info then
-      local flag = isGen2 and info.gen2EffectModeled or info.gen1EffectModeled
-      if flag ~= nil then modeled = flag end
+      if info.engineMove then
+        modeled = true
+      else
+        local flag = isGen2 and info.gen2EffectModeled or info.gen1EffectModeled
+        if flag ~= nil then modeled = flag end
+      end
     end
     ndModeledCache[moveId] = modeled
     return modeled

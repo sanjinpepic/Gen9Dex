@@ -486,9 +486,69 @@ local function installSpriteAssetPacks(mod, spritePackRosterFull, frameCounts, n
     activePackId = packId
   end
 
-  local function resolve(speciesId)
+  local function resolveRaw(speciesId)
     local resolver = packs[activePackId] or packs.sliced_v1
     return resolver(speciesId) or packs.sliced_v1(speciesId)
+  end
+
+  -- Real existence check, not just "did frameCounts have an entry" --
+  -- confirmed real gap: frameCounts/sprite_pack_roster_full.lua are
+  -- generated-at-slicing-time data, true only when assets/front|back/
+  -- were last regenerated, not a live guarantee the PNGs are still on
+  -- disk. A public build that ships this mod's code without its real
+  -- sprite pack (asset-free release, this session) would otherwise
+  -- commit dead paths straight into the registry with nothing catching
+  -- it. love.filesystem.getInfo is the lightweight check; pcall-guarded
+  -- since an earlier finding this session showed love.filesystem can
+  -- throw in this sandbox for directory-listing calls (getDirectoryItems)
+  -- -- unconfirmed whether getInfo on a single known path shares that
+  -- restriction, so a getInfo failure falls back to the proven existence
+  -- pattern already used elsewhere in this exact codebase (overworld_
+  -- spawns.lua's own pcall(love.graphics.newImage, path) check) rather
+  -- than assuming either one alone is safe.
+  -- Cached by path: installSpriteAnimation's own per-battler update loop
+  -- calls mod.exports.resolveSpritePack every advancing frame (advance ->
+  -- updateBattler, up to 60x/sec per active battler), not just once at
+  -- registration -- an uncached filesystem check here would be a real
+  -- per-frame I/O cost, not a one-off. A path's existence can't change
+  -- mid-session under normal play, so a permanent cache is safe (matches
+  -- the same never-invalidated imageCache pattern installSpriteAnimation's
+  -- own loadImage already uses for the actual frame loads).
+  local existsCache = {}
+  local function spriteFileExists(path)
+    if type(path) ~= "string" or path == "" then return false end
+    local cached = existsCache[path]
+    if cached ~= nil then return cached end
+    local fs = love and love.filesystem
+    local result
+    if not (fs and fs.getInfo) then
+      result = true
+    else
+      local ok, info = pcall(fs.getInfo, path)
+      if not ok then
+        local okImg, img = pcall(love.graphics.newImage, path)
+        result = okImg and img ~= nil
+      else
+        result = info ~= nil
+      end
+    end
+    existsCache[path] = result
+    return result
+  end
+
+  -- The checked resolver every caller (static registration below, and
+  -- installSpriteAnimation's live per-frame lookup via the export) should
+  -- use -- returns nil (same as "this pack has nothing for this species")
+  -- whenever the resolved front/back files don't actually exist, so every
+  -- existing "resolve(id) or <fallback>" call site downstream degrades
+  -- correctly with no other change needed.
+  local function resolve(speciesId)
+    local sprite = resolveRaw(speciesId)
+    if not sprite then return nil end
+    if spriteFileExists(sprite.spriteFront) and spriteFileExists(sprite.spriteBack) then
+      return sprite
+    end
+    return nil
   end
   mod.exports.resolveSpritePack = resolve
 
@@ -505,15 +565,22 @@ local function installSpriteAssetPacks(mod, spritePackRosterFull, frameCounts, n
     return type(path) ~= "string" or path == "" or path:find("/placeholder/", 1, true) ~= nil
   end
 
-  -- Layer 0: PICHU's own bundled art, referenced by raw path (not a
-  -- registry lookup) -- the absolute last resort if even this mod's own
-  -- pack (resolve, above) somehow returns nothing for one of its own 51
-  -- species. Explicit user call: "take our pichu assets as fallback for
-  -- all... in case any of our first layer fallback sprites are missing or
-  -- fail, pichu assets are the layer 0 failsafe."
-  local PICHU_FAILSAFE = {
-    spriteFront = builtinFramePath(mod, "front", "PICHU", 1),
-    spriteBack = builtinFramePath(mod, "back", "PICHU", 1),
+  -- Layer 0: a genuinely generic "no art available" placeholder (id
+  -- "000"), referenced by raw path (not a registry lookup) -- the
+  -- absolute last resort whenever resolve() above returns nothing at all
+  -- for a species, INCLUDING the case where the real files are simply
+  -- missing (a public, asset-free release of this mod, explicit user
+  -- decision this session -- players supply their own art via national_dex
+  -- or another sprite pack; this mod ships no bundled Pokemon art). Was
+  -- previously real PICHU art (an earlier, narrower "layer 0 failsafe"
+  -- call) -- superseded by this explicit rename/generic-asset instruction;
+  -- assets/front|back/000/001.png are a direct copy of national_dex's own
+  -- placeholder art (assets/sets/placeholder/front.png/back.png, a real,
+  -- generic, already-trusted "no sprite" convention), not new art authored
+  -- here.
+  local PLACEHOLDER_FAILSAFE = {
+    spriteFront = builtinFramePath(mod, "front", "000", 1),
+    spriteBack = builtinFramePath(mod, "back", "000", 1),
     frontSize = 7,
     battleScaleFront = BASE_SPRITE_SCALE,
     battleScaleBack = BASE_SPRITE_SCALE,
@@ -528,7 +595,8 @@ local function installSpriteAssetPacks(mod, spritePackRosterFull, frameCounts, n
   --   3. This mod's own bundled pack.
   --   4. The cart's own native sprite (vanilla-native ids only -- this
   --      mod's pack always wins over it, never the reverse).
-  --   5 (lowest). PICHU_FAILSAFE.
+  --   5 (lowest). PLACEHOLDER_FAILSAFE (generic "000" art, or missing
+  --      real files for an id resolve() would otherwise have covered).
   --
   -- Confirmed bug, fixed here: the previous version treated ANY existing
   -- real (non-placeholder) sprite -- tier 2 national_dex OR tier 4 plain
@@ -563,8 +631,30 @@ local function installSpriteAssetPacks(mod, spritePackRosterFull, frameCounts, n
       local hasRealSprite = current
         and not isPlaceholder(current.spriteFront) and not isPlaceholder(current.spriteBack)
       local deferToExisting = hasRealSprite and ndexOn and not isNativeVanilla[id]
+      -- Confirmed real gap, caught reasoning through the asset-free
+      -- (Gen9Dex) case: a vanilla-native species with no real bundled art
+      -- of our own (an asset-free build, or simply not one of ours) used
+      -- to fall straight to PLACEHOLDER_FAILSAFE below once resolve()
+      -- came back nil, CLOBBERING vanilla's own perfectly good native
+      -- sprite with a generic "?" placeholder -- strictly worse art than
+      -- what was already there. deferToExisting only ever gated the
+      -- national_dex case (tier 2); it never asked "is there already
+      -- real art of ANY kind worth leaving alone." skipEntirely covers
+      -- that second, general case: we have nothing of our own to offer
+      -- AND something real already exists, so don't touch this id at
+      -- all -- not even the placeholder.
+      local skipEntirely = false
+      local sprite = nil
       if not deferToExisting then
-        local sprite = resolve(id) or PICHU_FAILSAFE
+        sprite = resolve(id)
+        skipEntirely = not sprite and hasRealSprite
+      end
+      if deferToExisting or skipEntirely then
+        -- nothing to do: either national_dex's real sprite already wins
+        -- (tier 2), or we have nothing of our own and something real is
+        -- already in place (tier 4, left untouched).
+      else
+        sprite = sprite or PLACEHOLDER_FAILSAFE
         mod.content.pokemon:patch(id, {
           spriteFront = sprite.spriteFront, spriteBack = sprite.spriteBack,
           frontSize = sprite.frontSize,
@@ -2249,6 +2339,17 @@ return function(mod)
   -- enforcement-touch-point grounding.
   local installModernStatusEffects = loadSibling(mod, "combat/modern_status_effects.lua")
   installModernStatusEffects(mod)
+
+  -- Phase 4 of the move-effect completion pipeline: weather (Rain Dance/
+  -- Sunny Day/Sandstorm/Snowscape, Thunder/Blizzard's accuracy exception,
+  -- Solar Beam's Sun charge-skip, Sand's end-of-turn chip). Weather STATE
+  -- and the Sun/Rain damage modifier live in modern_combat.lua itself
+  -- (see that file's own header); this sibling owns the wiring. Loaded
+  -- after modern_status_effects.lua for load-order consistency with the
+  -- rest of this pipeline, and before gimmick_dynamax.lua so its Solar
+  -- Beam performMove wrap sits inside (native-ward of) Max Guard's own.
+  local installModernWeather = loadSibling(mod, "combat/modern_weather.lua")
+  installModernWeather(mod)
 
   -- Shared theme/panel primitives (colors, panel(), printText(), cursor,
   -- HP bar) -- one module so battle and every menu screen below read as

@@ -47,6 +47,16 @@ return function(mod)
   local function curTypesOf(who, gen2)
     return (gen2 and who.types or who.curTypes) or {}
   end
+  -- Exported for Phase 4 (combat/modern_weather.lua): Sand's chip-damage
+  -- immunity check (Ground/Steel/Rock) needs the same Transform/
+  -- Conversion-aware live type list this file already uses for STAB.
+  mod.exports.curTypesOf = curTypesOf
+  -- Exported for the same sibling: several weather touch-points (the
+  -- Solar Beam charge-skip performMove wrap, the sand-chip end-of-turn
+  -- hook, the Thunder/Blizzard battle.accuracy hook) run OUTSIDE the
+  -- move_effects normalize() bridge, so they need this discriminator
+  -- directly instead of re-deriving it.
+  mod.exports.isGen2Battle = isGen2Battle
 
   ------------------------------------------------------------------
   -- Multiplier-slot framework: named, priority-ordered damage
@@ -96,6 +106,101 @@ return function(mod)
   registerDamageModifier("stab", 100, function(ctx)
     for _, t in ipairs(curTypesOf(ctx.user, ctx.gen2)) do
       if t == ctx.move.type then return 1.5 end
+    end
+    return 1.0
+  end)
+
+  ------------------------------------------------------------------
+  -- Phase 4: GalarGmaxDex-owned weather state. Gen 1 has no native
+  -- weather concept at all -- field.weather is a declared-but-dead field
+  -- (confirmed zero real consumers; BattleCheckpoint.lua:367 only
+  -- persists whatever nil is already there). battle.weather/
+  -- battle.weatherTurns are new fields, written directly onto the battle
+  -- object itself, the same direct-field convention already used for
+  -- per-battler state elsewhere in this engine (user.thrashTurns,
+  -- user.protected) -- no side table needed, since the battle object's
+  -- own lifetime already bounds it (unlike stageState above, which needs
+  -- one because it's keyed off a table it doesn't own).
+  --
+  -- Gen 2 already has this SAME state, for real: self.weather/
+  -- self.weatherTurns (gen2/Battle.lua:291-292; native RAINDANCE/
+  -- SUNNYDAY/SANDSTORM handlers at :1896-1906 set them; tickWeather at
+  -- :4275-4304 counts them down and, for sandstorm, applies end-of-turn
+  -- chip). Reused directly here, not shadowed with a parallel field --
+  -- setWeather below writes straight into those same two fields, using
+  -- Gen 2's own lowercase value convention ("rain"/"sun"/"sandstorm"),
+  -- so every OTHER native consumer already keyed off self.weather
+  -- (Effects.weatherHealFraction, gen2/Ai.lua's sun check, the
+  -- EFFECT_SOLARBEAM sun-skip at gen2/Battle.lua:1460) keeps working
+  -- automatically. modern_weather.lua's own header explains why
+  -- GalarGmaxDex's own override handlers have to be the ones calling
+  -- this now instead of native's hardcoded EFFECT_RAIN_DANCE/EFFECT_
+  -- SUNNY_DAY/EFFECT_SANDSTORM ones.
+  --
+  -- "snow" is a weather value Gen 2 never produces natively (no Hail/
+  -- Snow move exists in its own Effects.WEATHER table) -- modern_
+  -- weather.lua adds it as pure new DATA into Gen 2's own Effects.
+  -- WEATHER_START_TEXT/TURN_TEXT/END_TEXT tables (not a new field), so
+  -- tickWeather's own generic countdown/expiry logic -- keyed by
+  -- self.weather's VALUE, not a fixed key list -- handles it correctly
+  -- with no control-flow changes at all.
+  ------------------------------------------------------------------
+  local GEN2_WEATHER_VALUE = { RAIN = "rain", SUN = "sun", SAND = "sandstorm", SNOW = "snow" }
+  local FROM_GEN2_WEATHER_VALUE = { rain = "RAIN", sun = "SUN", sandstorm = "SAND", snow = "SNOW" }
+
+  -- Single cross-engine reader: "RAIN"|"SUN"|"SAND"|"SNOW"|nil, regardless
+  -- of which engine's own field shape backs it. Every weather touch-point
+  -- (the damage modifier below, the Ice-type Defense boost further down,
+  -- modern_weather.lua's accuracy/charge/chip hooks) goes through this
+  -- one function rather than reading battle.weather directly.
+  local function currentWeather(battle, gen2)
+    if not battle then return nil end
+    if gen2 then
+      return battle.weather and FROM_GEN2_WEATHER_VALUE[battle.weather] or nil
+    end
+    return battle.weather
+  end
+  mod.exports.currentWeather = currentWeather
+
+  -- 5 turns: real Showdown's default weather duration (no weather-rock/
+  -- ability extension modeled), and exactly Gen 2's own native
+  -- Effects.WEATHER_TURNS -- both engines agree already.
+  local WEATHER_TURNS = 5
+  mod.exports.WEATHER_TURNS = WEATHER_TURNS
+
+  -- key is "RAIN"|"SUN"|"SAND"|"SNOW"|nil (nil clears the weather).
+  local function setWeather(battle, gen2, key)
+    if gen2 then
+      battle.weather = key and GEN2_WEATHER_VALUE[key] or nil
+      battle.weatherTurns = key and WEATHER_TURNS or 0
+      return
+    end
+    battle.weather = key
+    battle.weatherTurns = key and WEATHER_TURNS or 0
+  end
+  mod.exports.setWeather = setWeather
+
+  -- Sun/Rain's Fire/Water damage multiplier. Priority 110, ABOVE stab's
+  -- 100 -- real Gen 6+ Showdown applies the weather modifier before STAB
+  -- in the damage-stage order (Bulbapedia's damage formula: ...weather,
+  -- glaive rush, critical, random, STAB, type...), so this has to run
+  -- first through the descending-priority chain for the per-stage floor
+  -- rounding to land in the right place. Sand/Snow have no flat damage
+  -- multiplier in real Showdown (Sand's old Rock SpDef boost and Snow's
+  -- real Ice Defense boost are BOTH stat-input effects, not whole-damage
+  -- multipliers -- Snow's is wired directly into this function's own
+  -- defense-stat resolution below instead; Sand's is out of scope per
+  -- the plan). Registered here, not in modern_weather.lua, purely so it
+  -- sits next to currentWeather() -- the actual call site (registerDamage
+  -- Modifier is already a public export) doesn't care which file calls it.
+  registerDamageModifier("weather", 110, function(ctx)
+    local weather = currentWeather(ctx.battle, ctx.gen2)
+    if weather == "SUN" then
+      if ctx.move.type == "FIRE" then return 1.5 end
+      if ctx.move.type == "WATER" then return 0.5 end
+    elseif weather == "RAIN" then
+      if ctx.move.type == "WATER" then return 1.5 end
+      if ctx.move.type == "FIRE" then return 0.5 end
     end
     return 1.0
   end)
@@ -488,6 +593,28 @@ return function(mod)
         if screens then
           if special and screens.lightScreen then dfn = dfn * 2 end
           if not special and screens.reflect then dfn = dfn * 2 end
+        end
+      end
+    end
+
+    -- Snow: Ice-type Defense +50% -- Gen 9's real replacement mechanic
+    -- for old Hail (this project explicitly doesn't build Hail; see
+    -- modern_weather.lua's header). A genuine STAT-INPUT multiplier, not
+    -- a whole-damage multiplier like Sun/Rain's Fire/Water bonus above
+    -- (registerDamageModifier's chain only ever scales the final `d`,
+    -- confirmed by that chain's own call site further down -- it never
+    -- touches atk/dfn), so it has to land here, on dfn itself, before
+    -- it's used in the formula. Applies to the DEFENDER only, and only
+    -- for a physical hit (defStat=="defense") -- Snow's real boost is to
+    -- Defense specifically, not Sp. Def. Runs regardless of crit: a
+    -- crit ignores stat STAGE changes (critIgnoresStages above), not a
+    -- flat weather/ability-shaped multiplier, so this sits after both
+    -- branches rather than inside either one.
+    if defStat == "defense" and currentWeather(ctx.battle, gen2) == "SNOW" then
+      for _, t in ipairs(curTypesOf(target, gen2)) do
+        if t == "ICE" then
+          dfn = math.floor(dfn * 1.5);
+          break
         end
       end
     end

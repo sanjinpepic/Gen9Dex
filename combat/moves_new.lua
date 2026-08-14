@@ -67,6 +67,17 @@ return {
   ATTRACT = { name = "Attract", type = "NORMAL", category = "status", power = 0, accuracy = 100, pp = 15, priority = 0, highCrit = false, effect = "GMAX_ATTRACT_EFFECT", functionCode = "AttractTarget" },
   BELCH = { name = "Belch", type = "POISON", category = "special", power = 120, accuracy = 90, pp = 10, priority = 0, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", functionCode = "FailsIfUserNotConsumedBerry" },
   BELLYDRUM = { name = "Belly Drum", type = "NORMAL", category = "status", power = 0, accuracy = 100, pp = 10, priority = 0, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", functionCode = "MaxUserAttackLoseHalfOfTotalHP" },
+  -- Phase 4 (weather): power/accuracy/type/pp already real (national_dex),
+  -- unchanged here -- only effect is new, giving Blizzard's Snow accuracy
+  -- exception (combat/modern_weather.lua's battle.accuracy hook, keyed off
+  -- move.id directly, not this effect id) a real registration to point at
+  -- so isMoveDataComplete stops treating it as stubbed. The 10% freeze
+  -- secondary is real Showdown too but explicitly NOT wired this phase
+  -- (out of the requested scope) -- GALAR_BLIZZARD_EFFECT is deliberately
+  -- an empty kind="full" record (see modern_weather.lua) so it doesn't
+  -- eat Blizzard's own damage on Gen 2 the way a kind="secondary"+run
+  -- record would.
+  BLIZZARD = { name = "Blizzard", type = "ICE", category = "special", power = 110, accuracy = 70, pp = 5, priority = 0, highCrit = false, effect = "GALAR_BLIZZARD_EFFECT", functionCode = "FreezeTarget" },
   BOOMBURST = { name = "Boomburst", type = "NORMAL", category = "special", power = 140, accuracy = 100, pp = 10, priority = 0, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", functionCode = "None" },
   BOUNCE = { name = "Bounce", type = "FLYING", category = "physical", power = 85, accuracy = 85, pp = 5, priority = 0, highCrit = false, effect = "GALAR_BOUNCE_EFFECT", functionCode = "TwoTurnAttackInvulnerableInSkyParalyzeTarget" },
   BRANCHPOKE = { name = "Branch Poke", type = "GRASS", category = "physical", power = 40, accuracy = 100, pp = 40, priority = 0, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", functionCode = "None" },
@@ -191,7 +202,7 @@ return {
   PSYCHICTERRAIN = { name = "Psychic Terrain", type = "PSYCHIC", category = "status", power = 0, accuracy = 100, pp = 10, priority = 0, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", functionCode = "StartPsychicTerrain" },
   PSYCHOCUT = { name = "Psycho Cut", type = "PSYCHIC", category = "physical", power = 70, accuracy = 100, pp = 20, priority = 0, highCrit = true, effect = "NO_ADDITIONAL_EFFECT", functionCode = "None" },
   PYROBALL = { name = "Pyro Ball", type = "FIRE", category = "physical", power = 120, accuracy = 90, pp = 5, priority = 0, highCrit = false, effect = "GALAR_BURN_EFFECT_10", functionCode = "BurnTarget" },
-  RAINDANCE = { name = "Rain Dance", type = "WATER", category = "status", power = 0, accuracy = 100, pp = 5, priority = 0, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", functionCode = "StartRainWeather" },
+  RAINDANCE = { name = "Rain Dance", type = "WATER", category = "status", power = 0, accuracy = 100, pp = 5, priority = 0, highCrit = false, effect = "GALAR_RAINDANCE_EFFECT", functionCode = "StartRainWeather" },
   RAPIDSPIN = { name = "Rapid Spin", type = "NORMAL", category = "physical", power = 50, accuracy = 100, pp = 40, priority = 0, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", functionCode = "RemoveUserBindingAndEntryHazards" },
   RAZORSHELL = { name = "Razor Shell", type = "WATER", category = "physical", power = 75, accuracy = 95, pp = 10, priority = 0, highCrit = false, effect = "GMAX_RAZORSHELL_EFFECT", functionCode = "LowerTargetDefense1" },
   RECYCLE = { name = "Recycle", type = "NORMAL", category = "status", power = 0, accuracy = 100, pp = 10, priority = 0, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", functionCode = "RestoreUserConsumedItem" },
@@ -201,7 +212,7 @@ return {
   ROCKTOMB = { name = "Rock Tomb", type = "ROCK", category = "physical", power = 60, accuracy = 95, pp = 15, priority = 0, highCrit = false, effect = "GMAX_ROCKTOMB_EFFECT", functionCode = "LowerTargetSpeed1" },
   ROLLOUT = { name = "Rollout", type = "ROCK", category = "physical", power = 30, accuracy = 90, pp = 20, priority = 0, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", functionCode = "MultiTurnAttackPowersUpEachTurn" },
   ROUND = { name = "Round", type = "NORMAL", category = "special", power = 60, accuracy = 100, pp = 15, priority = 0, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", functionCode = "UsedAfterAllyRoundWithDoublePower" },
-  SANDSTORM = { name = "Sandstorm", type = "ROCK", category = "status", power = 0, accuracy = 100, pp = 10, priority = 0, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", functionCode = "StartSandstormWeather" },
+  SANDSTORM = { name = "Sandstorm", type = "ROCK", category = "status", power = 0, accuracy = 100, pp = 10, priority = 0, highCrit = false, effect = "GALAR_SANDSTORM_EFFECT", functionCode = "StartSandstormWeather" },
   SANDTOMB = { name = "Sand Tomb", type = "GROUND", category = "physical", power = 35, accuracy = 85, pp = 15, priority = 0, highCrit = false, effect = "GALAR_TRAP_EFFECT", functionCode = "BindTarget" },
   SCARYFACE = { name = "Scary Face", type = "NORMAL", category = "status", power = 0, accuracy = 100, pp = 10, priority = 0, highCrit = false, effect = "GMAX_SCARYFACE_EFFECT", functionCode = "LowerTargetSpeed2" },
   SHIFTGEAR = { name = "Shift Gear", type = "STEEL", category = "status", power = 0, accuracy = 100, pp = 10, priority = 0, highCrit = false, effect = "GMAX_SHIFTGEAR_EFFECT", functionCode = "RaiseUserAtk1Spd2" },
@@ -209,7 +220,20 @@ return {
   SLUDGEBOMB = { name = "Sludge Bomb", type = "POISON", category = "special", power = 90, accuracy = 100, pp = 10, priority = 0, highCrit = false, effect = "GALAR_POISON_EFFECT_30", functionCode = "PoisonTarget" },
   SMACKDOWN = { name = "Smack Down", type = "ROCK", category = "physical", power = 50, accuracy = 100, pp = 15, priority = 0, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", functionCode = "HitsTargetInSkyGroundsTarget" },
   SNIPESHOT = { name = "Snipe Shot", type = "WATER", category = "special", power = 80, accuracy = 100, pp = 15, priority = 0, highCrit = true, effect = "NO_ADDITIONAL_EFFECT", functionCode = "CannotBeRedirected" },
+  -- Phase 4 (weather): Gen 9's real replacement for Hail (out of scope
+  -- this project, see combat/modern_weather.lua's header) -- same PP/
+  -- accuracy/category shape Hail had, only the type differs (Ice, same
+  -- as Hail). Not previously registered anywhere (national_dex or
+  -- otherwise) -- a fresh entry, not an override.
+  SNOWSCAPE = { name = "Snowscape", type = "ICE", category = "status", power = 0, accuracy = 100, pp = 10, priority = 0, highCrit = false, effect = "GALAR_SNOWSCAPE_EFFECT", functionCode = "StartSnowWeather" },
   SOAK = { name = "Soak", type = "WATER", category = "status", power = 0, accuracy = 100, pp = 20, priority = 0, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", functionCode = "SetTargetTypesToWater" },
+  -- Phase 4 (weather): power/accuracy/type/pp already real (national_dex),
+  -- unchanged here -- only effect is new, giving Solar Beam's real
+  -- two-turn charge (previously absent -- national_dex's own stub has no
+  -- charge field at all) and its Sun skip-the-charge-turn behavior
+  -- (combat/modern_weather.lua's BattleState:performMove wrap, keyed off
+  -- move.id directly) a real registration to attach to.
+  SOLARBEAM = { name = "Solar Beam", type = "GRASS", category = "special", power = 120, accuracy = 100, pp = 10, priority = 0, highCrit = false, effect = "GALAR_SOLARBEAM_EFFECT", functionCode = "TwoTurnAttackSkipsChargeInSun" },
   SPARK = { name = "Spark", type = "ELECTRIC", category = "physical", power = 65, accuracy = 100, pp = 20, priority = 0, highCrit = false, effect = "GALAR_PARALYZE_EFFECT_30", functionCode = "ParalyzeTarget" },
   SPIRITBREAK = { name = "Spirit Break", type = "FAIRY", category = "physical", power = 75, accuracy = 100, pp = 15, priority = 0, highCrit = false, effect = "GMAX_SPIRITBREAK_EFFECT", functionCode = "LowerTargetSpAtk1" },
   STEALTHROCK = { name = "Stealth Rock", type = "ROCK", category = "status", power = 0, accuracy = 100, pp = 20, priority = 0, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", functionCode = "AddStealthRocksToFoeSide" },
@@ -218,6 +242,12 @@ return {
   STONEEDGE = { name = "Stone Edge", type = "ROCK", category = "physical", power = 100, accuracy = 80, pp = 5, priority = 0, highCrit = true, effect = "NO_ADDITIONAL_EFFECT", functionCode = "None" },
   STRUGGLEBUG = { name = "Struggle Bug", type = "BUG", category = "special", power = 50, accuracy = 100, pp = 20, priority = 0, highCrit = false, effect = "GMAX_STRUGGLEBUG_EFFECT", functionCode = "LowerTargetSpAtk1" },
   SUCKERPUNCH = { name = "Sucker Punch", type = "DARK", category = "physical", power = 70, accuracy = 100, pp = 5, priority = 1, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", functionCode = "FailsIfTargetActed" },
+  -- Phase 4 (weather): real Showdown stats -- power 0 status move, PP 5,
+  -- always hits (accuracy=100 here only because this file's own
+  -- convention represents "always hits" as a plain 100, matching
+  -- RAINDANCE/SANDSTORM above; accuracyChecked is left unset on the
+  -- registered effect, same as every other self/field-targeted primary).
+  SUNNYDAY = { name = "Sunny Day", type = "FIRE", category = "status", power = 0, accuracy = 100, pp = 5, priority = 0, highCrit = false, effect = "GALAR_SUNNYDAY_EFFECT", functionCode = "StartSunWeather" },
   SUPERPOWER = { name = "Superpower", type = "FIGHTING", category = "physical", power = 120, accuracy = 100, pp = 5, priority = 0, highCrit = false, effect = "GMAX_SUPERPOWER_EFFECT", functionCode = "LowerUserAtkDef1" },
   SWAGGER = { name = "Swagger", type = "NORMAL", category = "status", power = 0, accuracy = 85, pp = 15, priority = 0, highCrit = false, effect = "GMAX_SWAGGER_EFFECT", functionCode = "RaiseTargetAttack2ConfuseTarget" },
   SWALLOW = { name = "Swallow", type = "NORMAL", category = "status", power = 0, accuracy = 100, pp = 10, priority = 0, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", functionCode = "HealUserDependingOnUserStockpile" },
