@@ -40,7 +40,7 @@
 return function(mod)
   local ok, Gen2Battle = pcall(require, "src.battle.gen2.Battle")
   if not ok or type(Gen2Battle) ~= "table" then return end
-  local ModernStats = require("src.pokemon.ModernStats")
+  local ModernStats = mod.exports.ModernStats
 
   if Gen2Battle.__galarGen2ModernStatsWrapped then return end
   Gen2Battle.__galarGen2ModernStatsWrapped = true

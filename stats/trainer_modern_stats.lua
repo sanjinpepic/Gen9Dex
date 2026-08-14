@@ -38,7 +38,7 @@
 -- identically to how it always has, plus the two new stats.
 return function(mod)
   local BattleState = require("src.battle.BattleState")
-  local ModernStats = require("src.pokemon.ModernStats")
+  local ModernStats = mod.exports.ModernStats
 
   local providers = {} -- { {fn=, priority=}, ... }, sorted high-priority-first
 

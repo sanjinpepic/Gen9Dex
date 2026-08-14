@@ -19,9 +19,10 @@
 -- from type, since Gen 4+ broke the strict type-implies-category rule
 -- (e.g. Focus Blast/Special vs Close Combat/Physical, both Fighting).
 --
--- Lives in GalarGmaxDex's own folder, not the engine tree -- registered
--- into package.preload["src.pokemon.MoveCategory"] by main.lua (see
--- engine_modern_stats.lua's own header for the full reasoning).
+-- Lives in GalarGmaxDex's own folder, not the engine tree -- loaded once
+-- by main.lua into mod.exports.MoveCategory (see engine_modern_stats.lua's
+-- own header for the full reasoning, including why this moved off
+-- package.preload).
 
 local TypeChart = require("src.battle.TypeChart")
 

@@ -48,7 +48,7 @@
 -- wrap is just the one caller this file installs itself.
 return function(mod)
   local BattleState = require("src.battle.BattleState")
-  local ModernStats = require("src.pokemon.ModernStats")
+  local ModernStats = mod.exports.ModernStats
 
   -- national_dex (optional_dependencies, manifest.json) is the real base-
   -- stat/ability source of truth when installed -- real split

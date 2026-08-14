@@ -13,8 +13,8 @@
 -- Renderer:setUISize() is the supported engine extension point for a wider UI
 -- surface; no engine file is modified by this mod.
 return function(mod)
-  local ModernStats = require("src.pokemon.ModernStats")
-  local MoveCategory = require("src.pokemon.MoveCategory")
+  local ModernStats = mod.exports.ModernStats
+  local MoveCategory = mod.exports.MoveCategory
   local Stats = require("src.pokemon.Stats")
   local Sprites = require("src.pokemon.Sprites")
   local TypeChart = require("src.battle.TypeChart")

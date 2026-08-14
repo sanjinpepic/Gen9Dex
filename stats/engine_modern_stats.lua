@@ -13,13 +13,13 @@
 -- Conversion is linear and applied once, then cached on the mon table --
 -- same "derive on demand, idempotent after" contract as Stats.ensure.
 --
--- Lives in GalarGmaxDex's own folder, not the engine tree -- registered
--- into package.preload["src.pokemon.ModernStats"] by main.lua so every
--- require("src.pokemon.ModernStats") call site (this mod's own files, and
--- SaveData.validate's wrap in save_scrub.lua) resolves to this file
--- without needing the engine's own src/pokemon/ to carry it. Keeps the
--- engine tree byte-for-byte stock -- see save_scrub.lua's header for why
--- that split happened and what it replaces.
+-- Lives in GalarGmaxDex's own folder, not the engine tree -- loaded once
+-- by main.lua into mod.exports.ModernStats (previously package.preload,
+-- since removed from the mod sandbox) so every consumer (this mod's own
+-- files, and SaveData.validate's wrap in save_scrub.lua) reads the same
+-- singleton without needing the engine's own src/pokemon/ to carry it.
+-- Keeps the engine tree byte-for-byte stock -- see save_scrub.lua's
+-- header for why that split happened and what it replaces.
 
 local ModernStats = {}
 
