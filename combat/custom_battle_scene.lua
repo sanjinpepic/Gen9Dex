@@ -666,7 +666,16 @@ return function(mod)
           end
         end
         if mod.exports.advanceBattleSprites then
-          pcall(mod.exports.advanceBattleSprites, battle, dt)
+          -- self.game (this Gen2BattleState UI instance's own field), not
+          -- battle.game -- the pure src.battle.gen2.Battle object has no
+          -- .game field at all, so without this the game-speed-up
+          -- protection this whole feature exists for would silently do
+          -- nothing on Gen 2 (see advanceBattleSprites' own comment).
+          -- self.anim ~= nil is Gen 2's own "a pic effect is playing right
+          -- now" signal (BattleState:drawPic reads image:getDimensions()
+          -- fresh every frame during one) -- passed as forcePause so a
+          -- frame swap can never land mid-effect.
+          pcall(mod.exports.advanceBattleSprites, battle, dt, self.game, self.anim ~= nil)
         end
         return
       end
@@ -676,6 +685,24 @@ return function(mod)
       if onMoveSelect and input and input:wasPressed("start") then
         openGimmickMenu(battle)
         return
+      end
+
+      -- The ring-open branch above already calls advanceBattleSprites so
+      -- its own overlay doesn't freeze sprite cycling (main.lua's own
+      -- comment: "OTHER GalarGmaxDex files that freeze their own slice of
+      -- BattleState:update... can keep sprite frame-cycling running
+      -- independently"). Everywhere else -- ordinary move-select, damage
+      -- animations, the whole rest of a ring-closed Gen 2 battle -- never
+      -- called it at all, which is the entire reason Gen 2 battle sprites
+      -- read as static: Gen 1's own equivalent wrap (main.lua's
+      -- `function BattleState:update(dt) ... advanceBattleSprites(self, dt)
+      -- ... end`) calls it unconditionally on every tick, this one didn't.
+      -- Same call, same args, same pcall guard as the ring branch above
+      -- uses -- nothing about static sprite registration, palette
+      -- handling, or draw positioning changes; this only adds the missing
+      -- per-tick frame advance for the non-ring path.
+      if battle and mod.exports.advanceBattleSprites then
+        pcall(mod.exports.advanceBattleSprites, battle, dt, self.game, self.anim ~= nil)
       end
 
       return nativeGen2Update(self, dt)
