@@ -7,9 +7,10 @@
   "game_version": ">=0.1.45",
   "profile": "content",
   "category": "GAMEPLAY",
+  "games": ["gen1", "gen2"],
   "permissions": ["engine_internals"],
   "options_schema": "options.lua",
-  "dependencies": ["modern_type_framework"],
-  "optional_dependencies": ["dynamax", "DRAMATIC_SHAPE", "overworld_wild_spawns", "gen1_modern_ui", "FOLLOWERS_EX"],
-  "description": "Phase 1: registers the 51 non-native species needed for the 34 Gigantamax-capable Pokemon and their evolution lines (species, evolutions, typing). Movepools, Gigantamax forms/moves and battle sprites are later phases."
+  "dependencies": ["national_dex"],
+  "optional_dependencies": [],
+  "description": "A Gigantamax-capable custom battle-scene framework for the 34 Gigantamax species and their evolution lines. Consumes national_dex (optional) for species stats/types/sprites where installed, patching in evolution data and a modern IV/EV stat system on top; degrades gracefully to the native roster without it."
 }
