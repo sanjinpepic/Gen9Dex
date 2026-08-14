@@ -1988,6 +1988,36 @@ local function installDebugOptions(mod)
 end
 
 return function(mod)
+  -- Gen 2 engine bug, confirmed by directly reading gen1recomp-dev's own
+  -- src/mods/ManagerState.lua + src/core/Game2.lua (not anything in this
+  -- mod, national_dex, or any mod we own): ManagerState:persistOptions()
+  -- only ever calls self.game:writeOptions() -- a method Game (Gen 1)
+  -- defines directly, but Game2 never does (only Game2:persistOptions, a
+  -- different name). Game2:openStartMenuItem's "mods" entry hands
+  -- ManagerState the RAW Game2 instance, not the Gen2Compat-faced proxy
+  -- that would have bridged the name gap -- so on every Gen 2 boot,
+  -- changing ANY mod's per-mod option (choice/toggle/number) from the
+  -- in-game Mod Manager silently never reaches disk: the in-memory change
+  -- is correct for that session, then reverts to whatever was last
+  -- actually written, every single exit. Confirmed root cause of
+  -- national_dex's MOVES option always reverting to GEN-NATIVE on Gen 2,
+  -- both PC and Android -- a pure logic gap, not storage flakiness, so
+  -- it's platform-independent and not specific to that one option.
+  --
+  -- Aliasing the missing method fixes it for every mod's options on Gen 2,
+  -- not just national_dex's. pcall-guarded since Game2 is only even a
+  -- real module on a Gen 2 boot; idempotent (checks not already present)
+  -- so this is safe however many mods end up shipping the same patch.
+  -- Deliberate, explicit-instruction desync: this patch lives ONLY in
+  -- this public repo, NOT in the local GalarGmaxDex dev copy.
+  do
+    local ok, Game2 = pcall(require, "src.core.Game2")
+    if ok and type(Game2) == "table" and not Game2.writeOptions
+        and type(Game2.persistOptions) == "function" then
+      Game2.writeOptions = Game2.persistOptions
+    end
+  end
+
   -- src.pokemon.ModernStats / src.pokemon.MoveCategory used to be files
   -- hand-added directly to the engine tree (src/pokemon/), because a
   -- normal require("src.pokemon.X") only ever resolves against the
