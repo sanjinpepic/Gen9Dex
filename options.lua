@@ -83,21 +83,42 @@ return {
     choices = { { "65% (10px)", 10 }, { "80% (13px)", 13 }, { "90% (14px)", 14 }, { "100% (16px)", 16 } },
     description = "How close (pixels, center-to-center) the player must get to a wild spawn to trigger contact. Does not affect the classic 2D grid trigger.",
   },
+  -- Not yet consulted anywhere -- explicit user request to leave this
+  -- placeholder in place for a future pass that prints "X lost Y HP!"
+  -- style messages using our own computed damage number (both gens).
+  -- modern_combat.lua's damage formula itself is no longer toggleable
+  -- (see that file's own header) -- this option is unrelated to that.
   {
-    key = "modern_combat_formulas",
-    label = "MODERN COMBAT FORMULAS",
-    type = "choice",
-    default = "true",
-    choices = { { "ON", "true" }, { "OFF", "false" } },
-    description = "Native Lua port of modern (Gen 6+) damage/crit formulas -- Sp.Atk/Sp.Def split, EV/IV/nature-aware, stage-based crit. Applies to every battle. OFF reverts to the engine's native Gen 1 formula. Pure math -- no visual effect; battle presentation is always vanilla.",
-  },
-  {
-    key = "custom_battle_scene",
-    label = "CUSTOM BATTLE SCENE",
+    key = "show_hp_lost_messages",
+    label = "SHOW HP LOST MESSAGES",
     type = "choice",
     default = "false",
     choices = { { "ON", "true" }, { "OFF", "false" } },
-    description = "PHASE A / foundation build: forces OG battle layout (hides the BATTLE LAYOUT option row while on) and replaces the plain white battle background with a placeholder color, to confirm the custom-scene render pipeline before real scene content is built on it. OFF (default): battles are fully vanilla.",
+    description = "Not yet implemented. Reserved for a future \"X lost Y HP!\" battle message using this mod's own computed damage number.",
+  },
+  {
+    key = "gimmicks",
+    label = "GIMMICKS",
+    type = "choice",
+    default = "false",
+    choices = { { "ON", "true" }, { "OFF", "false" } },
+    description = "Master switch for the gimmick menu (Dynamax/Mega/Z-Move/Tera picker, injected via START into the vanilla move-select screen). Battles stay fully vanilla otherwise -- native draws everything, nothing forced. VANILLA ENHANCED below picks which one battle layout actually gets it.",
+  },
+  {
+    key = "vanilla_enhanced_layout",
+    label = "VANILLA ENHANCED",
+    type = "choice",
+    default = "og",
+    choices = { { "OG", "og" }, { "WIDE", "wide" } },
+    description = "With GIMMICKS on: which battle layout gets the gimmick menu (and its correct free left/right/up/down move-list navigation -- native's own OG code only ever handles up/down, and native's own Wide grid bounces to the opposite side instead of holding position; both are fixed here). Only the layout selected here is affected -- switch this to match whichever BATTLE LAYOUT you're actually using.",
+  },
+  {
+    key = "gen2_wide_layout",
+    label = "GEN 2 MOVE TYPE READOUT",
+    type = "choice",
+    default = "false",
+    choices = { { "ON", "true" }, { "OFF", "false" } },
+    description = "Gen 2 only. Gen 2's real move-select screen has no equivalent to Gen 1's WIDE layout -- it's a single fixed 160x144 panel with no engine-level wider-canvas mechanism, confirmed against source. This adds the highlighted move's TYPE on the move box's own unused bottom row (native only fills 4 of the box's 6 rows during move select) -- the one piece of info Gen 2's native list doesn't show at all, without touching or resizing anything native draws.",
   },
   {
     key = "custom_menu_scene",
@@ -106,5 +127,29 @@ return {
     default = "false",
     choices = { { "ON", "true" }, { "OFF", "false" } },
     description = "Replaces native menu screens with GalarGmaxDex's own GUI, styled like the custom battle scene. Covers: party overview + moves/relearn/IV-EV screens, the title screen menu, the in-game start menu (with a MOD MENUS hub for other mods' rows), the options menu, and the mod manager. Battle switch prompts and TM/HM teach mode still render natively; bag and Pokedex are not covered yet. OFF (default): menus are fully vanilla.",
+  },
+  {
+    key = "gigantamax_size",
+    label = "GIGANTAMAX SIZE",
+    type = "choice",
+    default = "1.4",
+    choices = { { "x1.2", "1.2" }, { "x1.4", "1.4" }, { "x1.8", "1.8" }, { "x2.2", "2.2" }, { "x2.6", "2.6" } },
+    description = "How much bigger the player's mon's battle sprite draws while Gigantamaxed, on top of its normal resting size.",
+  },
+  {
+    key = "gigantamax_skip_animation",
+    label = "SKIP GIGANTAMAX GROW/SHRINK",
+    type = "choice",
+    default = "false",
+    choices = { { "ON", "true" }, { "OFF", "false" } },
+    description = "ON: Gigantamax's size-up and size-down happen instantly (0 seconds, no staged ramp/pause) instead of the eased multi-stage animation. OFF (default): the full animated sequence plays.",
+  },
+  {
+    key = "national_dex_sprites",
+    label = "NATIONAL DEX SPRITES",
+    type = "choice",
+    default = "true",
+    choices = { { "ON", "true" }, { "OFF", "false" } },
+    description = "ON (default): for species national_dex itself added beyond the cart's native roster, national_dex's own real sprite (if it has one) is used instead of GalarGmaxDex's bundled art. OFF: GalarGmaxDex's own bundled art always wins for every species in its pack. Either way, GalarGmaxDex's art always wins over the cart's own native sprite (e.g. Cyndaquil in Gen 2) -- this option only ever decides national_dex vs. GalarGmaxDex, never vanilla vs. GalarGmaxDex.",
   },
 }

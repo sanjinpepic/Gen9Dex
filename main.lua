@@ -1,8 +1,13 @@
 -- Galar Gigantamax Dex -- Phases 1-4: species/evolutions/typing, movepool,
 -- Gigantamax moves/forms, and full animated battle sprites.
 --
--- Phase 1 registers the 51 species (see species_data.lua) needed to
--- complete the evolution lines of the 34 Gigantamax-capable species.
+-- Phase 1 registers every species national_dex reports (the base-stat/
+-- type/dex source of truth now -- explicit user decision), with
+-- evolutions bound in from species_evolutions.lua (national_dex's own
+-- evolutions field ships empty). custom_sprite_species.lua is the
+-- separate, narrower id list (51 species: the 34 Gigantamax-capable
+-- species' full evolution lines) this mod has its own bundled battle/
+-- overworld art for -- see the sprite/scale-scoping phases further down.
 --
 -- Phase 2 (registerNewMoves/patchLearnsets below) replaces Phase 1's
 -- placeholder { "TACKLE" } moveset with each species' real level-up
@@ -168,46 +173,87 @@ end
 -- Fields mod.content.moves:register actually understands. moves_new.lua
 -- also carries `functionCode` (the original PBS FunctionCode, kept purely
 -- as documentation of what got stubbed) -- deliberately not passed through.
+-- bypassesProtect: Phase 3 of the move-effect completion pipeline (Feint)
+-- -- a plain data flag, not schema-declared on R.moves (Schemas.lua:824-846)
+-- but preserved anyway by that schema's own record-mode leniency (same
+-- "unknown top-level fields ride through" behavior modern_movepool_damage
+-- .lua's header already confirmed for R.move_effects); modern_combat_
+-- protect.lua's battle.damage hook already reads it off the live
+-- registered move, it just needed to actually reach that record.
 local MOVE_REGISTER_FIELDS = {
   "name", "type", "category", "power", "accuracy", "pp",
-  "priority", "highCrit", "effect", "multiHit",
+  "priority", "highCrit", "effect", "multiHit", "bypassesProtect",
 }
+
+-- A move id is "ours" (GalarGmaxDex owns its mechanics outright, per this
+-- session's explicit decision) once it has a real, non-stub effect: either
+-- a genuine secondary effect (a custom GALAR_*_EFFECT etc., not the plain
+-- "NO_ADDITIONAL_EFFECT" stub placeholder), a real multiHit distribution,
+-- a functionCode of "None" (the move never had a secondary effect to
+-- begin with -- confirmed complete, not stubbed), or a functionCode of
+-- "RemoveProtections" (Feint: its whole real "effect" is the bypassesProtect
+-- data flag above, with no move_effects handler of its own to point
+-- `effect` at -- same "nothing left to implement" reasoning as "None",
+-- just carried by a different field).
+local function isMoveDataComplete(def)
+  return def.multiHit ~= nil
+    or def.effect ~= "NO_ADDITIONAL_EFFECT"
+    or def.functionCode == "None"
+    or def.functionCode == "RemoveProtections"
+    -- Protect/Detect's real effect is applied via a runtime :patch in
+    -- modern_combat_protect.lua (both ids, unconditionally), never
+    -- through this file's own effect field -- confirmed real bug caught
+    -- reviewing Phase 3's own report: without this, isMoveDataComplete
+    -- (and learnset_ownership.lua's identical mirror of this check) would
+    -- classify PROTECT/DETECT as still-stubbed and the move-availability
+    -- gate would block selecting either of them, despite both being
+    -- fully functional.
+    or def.functionCode == "ProtectUser"
+end
 
 local function registerNewMoves(mod, movesData)
   installMovepoolEffects(mod, movesData)
-  local registered = 0
+  local registered, overridden, skipped = 0, 0, 0
   for id, def in pairs(movesData) do
     local entry = { id = id }
     for _, field in ipairs(MOVE_REGISTER_FIELDS) do
       entry[field] = def[field]
     end
     -- moves_new.lua keeps PBS's own type spelling (e.g. "PSYCHIC"), same
-    -- as species_data.lua's types field -- translated here the same way
-    -- species registration already does via engineTypeId, rather than
-    -- registered raw. Missing this for moves specifically (species
-    -- typing was already correctly translated) is what produced the
+    -- convention national_dex's own types field uses -- translated here
+    -- the same way species registration already does via engineTypeId,
+    -- rather than registered raw. Missing this for moves specifically
+    -- (species typing was already correctly translated) is what produced the
     -- "unresolved reference" validation error.
     entry.type = engineTypeId(entry.type)
-    mod.content.moves:register(id, entry)
-    registered = registered + 1
-  end
-  return registered
-end
-
-local function patchLearnsets(mod, learnsetsData)
-  local patched = 0
-  for id, def in pairs(learnsetsData) do
-    if mod.content.pokemon:get(id) then
-      mod.content.pokemon:patch(id, {
-        level1Moves = def.level1Moves,
-        learnset = def.learnset,
-      })
-      patched = patched + 1
+    -- national_dex (a hard dependency) unconditionally registers its own
+    -- modern move roster, which overlaps a real chunk of these 175 --
+    -- both mods separately set out to fill the same "modern moves Gen 1
+    -- never had" gap (confirmed collision: HEAVYSLAM exists in both).
+    -- :register throws on an existing record-semantics entry (Registry.lua
+    -- :90-96), so a collision needs :register vs :override, not a retry.
+    -- Explicit user decision, this session: GalarGmaxDex owns move
+    -- mechanics outright, so a move we have REAL effect coverage for
+    -- always wins here, regardless of registration order -- :override
+    -- replaces whatever national_dex/native already set. Anything we
+    -- still have stubbed is left alone: overriding with an equally (or
+    -- more) incomplete version would be a straight regression.
+    if not mod.content.moves:get(id) then
+      mod.content.moves:register(id, entry)
+      registered = registered + 1
+    elseif isMoveDataComplete(def) then
+      mod.content.moves:override(id, entry)
+      overridden = overridden + 1
     else
-      mod.log:error("galar_gmax_dex: cannot patch learnset, %s is not registered", id)
+      skipped = skipped + 1
     end
   end
-  return patched
+  if overridden > 0 or skipped > 0 then
+    mod.log:info(
+      "galar_gmax_dex: moves: %d newly registered, %d overrode an existing (national_dex/native) registration with our complete implementation, %d left alone (still stubbed here)",
+      registered, overridden, skipped)
+  end
+  return registered
 end
 
 -- =============================================================================
@@ -411,10 +457,12 @@ end
 -- it has no awareness of what that baseline represents (a fixed target, a
 -- percentage of native size, anything else) and needs none. This mod
 -- owns the resting size; dynamax owns growing and shrinking it.
-local BASE_SPRITE_SCALE = 1.4
+local BASE_SPRITE_SCALE = 0.7
 
-local function installSpriteAssetPacks(mod, speciesData, frameCounts)
+local function installSpriteAssetPacks(mod, spritePackRosterFull, frameCounts, nativeVanillaSpecies)
   local packs = {}
+  local isNativeVanilla = {}
+  for _, id in ipairs(nativeVanillaSpecies or {}) do isNativeVanilla[id] = true end
   local activePackId = "sliced_v1"
 
   packs.sliced_v1 = function(speciesId)
@@ -444,15 +492,101 @@ local function installSpriteAssetPacks(mod, speciesData, frameCounts)
   end
   mod.exports.resolveSpritePack = resolve
 
+  -- national_dex's own README is explicit: it ships NO Pokemon artwork at
+  -- all, only two 922-byte flat-grey "?" placeholders (assets/sets/
+  -- placeholder/front.png and .../back.png) -- species beyond the cart's
+  -- native roster show that placeholder unless the player has their own
+  -- sprite pack (e.g. universal_sprites) installed to fill it in. Not
+  -- something this mod can distinguish "real art" from "placeholder"
+  -- except by path -- so isPlaceholder below is a path check, not
+  -- foolproof forever, but accurate against the one convention that
+  -- exists today.
+  local function isPlaceholder(path)
+    return type(path) ~= "string" or path == "" or path:find("/placeholder/", 1, true) ~= nil
+  end
+
+  -- Layer 0: PICHU's own bundled art, referenced by raw path (not a
+  -- registry lookup) -- the absolute last resort if even this mod's own
+  -- pack (resolve, above) somehow returns nothing for one of its own 51
+  -- species. Explicit user call: "take our pichu assets as fallback for
+  -- all... in case any of our first layer fallback sprites are missing or
+  -- fail, pichu assets are the layer 0 failsafe."
+  local PICHU_FAILSAFE = {
+    spriteFront = builtinFramePath(mod, "front", "PICHU", 1),
+    spriteBack = builtinFramePath(mod, "back", "PICHU", 1),
+    frontSize = 7,
+    battleScaleFront = BASE_SPRITE_SCALE,
+    battleScaleBack = BASE_SPRITE_SCALE,
+  }
+
+  -- Sprite priority, explicit user spec (this session):
+  --   1 (highest). Any other mod's real sprite for the id.
+  --   2. national_dex's own real sprite -- ONLY for ids national_dex
+  --      itself added beyond the cart's native roster -- when NATIONAL
+  --      DEX SPRITES is on; also the fallback for a THIRD mod's missing
+  --      coverage on those same ids.
+  --   3. This mod's own bundled pack.
+  --   4. The cart's own native sprite (vanilla-native ids only -- this
+  --      mod's pack always wins over it, never the reverse).
+  --   5 (lowest). PICHU_FAILSAFE.
+  --
+  -- Confirmed bug, fixed here: the previous version treated ANY existing
+  -- real (non-placeholder) sprite -- tier 2 national_dex OR tier 4 plain
+  -- vanilla, no distinction -- as reason to skip our own patch whenever
+  -- NATIONAL DEX SPRITES was on (its default). That's correct for tier 2
+  -- but backwards for tier 4: a vanilla-native id (e.g. Gen 2's own
+  -- Cyndaquil) already ships a real native sprite, so it was always
+  -- treated as "already covered" and our own art for it never applied --
+  -- tier 3 never actually got to beat tier 4 the way it's supposed to.
+  -- native_vanilla_species.lua (Kanto+Johto, 251 ids -- same source/
+  -- methodology Phase 1's own generator already used to classify these
+  -- exact ids) is what lets deferToExisting only fire for the genuinely
+  -- higher-priority case (a non-native id, i.e. one national_dex itself
+  -- contributed) instead of every id that merely already has SOME real
+  -- sprite.
+  --
+  -- Known, stated gap (not silently glossed over): tier 1 (a genuine
+  -- OTHER mod's sprite) isn't independently detected -- there's no signal
+  -- available here to distinguish "national_dex set this" from "some
+  -- third mod set this" for a non-native id, so both are deferred to
+  -- alike (correct either way, since both outrank tier 3), and a third
+  -- mod's sprite on a NATIVE id would incorrectly still be overridden by
+  -- our own pack (no baseline to compare native's own sprite against).
+  -- Separately, explicit user call this session: national_dex's own
+  -- sprites aren't being correctly consumed at all right now (a real,
+  -- known bug) -- deferred, not fixed here.
   mod.exports.reapplySpritePacks = function()
     local patched = 0
-    for _, id in ipairs(speciesData.order) do
-      local sprite = resolve(id)
-      if sprite then
+    local ndexOn = mod.options:get("national_dex_sprites") ~= "false"
+    for _, id in ipairs(spritePackRosterFull) do
+      local current = mod.content.pokemon:get(id)
+      local hasRealSprite = current
+        and not isPlaceholder(current.spriteFront) and not isPlaceholder(current.spriteBack)
+      local deferToExisting = hasRealSprite and ndexOn and not isNativeVanilla[id]
+      if not deferToExisting then
+        local sprite = resolve(id) or PICHU_FAILSAFE
         mod.content.pokemon:patch(id, {
           spriteFront = sprite.spriteFront, spriteBack = sprite.spriteBack,
           frontSize = sprite.frontSize,
           battleScaleFront = sprite.battleScaleFront, battleScaleBack = sprite.battleScaleBack,
+          -- Confirmed real bug, root-caused via a live screenshot: any
+          -- vanilla-native species (dex 1-251) our pack now reaches shows
+          -- as a hollow/outline mangled mess -- the engine's own GBC/SGB
+          -- palette-recolor pass, which vanilla's own indexed-palette ROM
+          -- art is DESIGNED to go through, was being applied to our real
+          -- full-color PNG frames too, since trueColor was never set on
+          -- the patch. national_dex-sourced species (739 of Phase 1's
+          -- roster) already carry trueColor=true from national_dex's own
+          -- registration, so a species-agnostic patch never touched their
+          -- flag and they looked fine -- only the 251 native-vanilla
+          -- species, whose OWN registration leaves trueColor unset/false,
+          -- were affected. This bug was latent until the priority fix
+          -- above first let our pack actually reach native-vanilla species
+          -- at all. Already an established, real field in this codebase
+          -- for exactly this purpose -- installOverworldSpriteProvider's
+          -- own ourDef() sets the identical trueColor=true on its own
+          -- real-color art.
+          trueColor = true,
         })
         patched = patched + 1
       end
@@ -469,7 +603,9 @@ local function installSpriteAssetPacks(mod, speciesData, frameCounts)
   -- is a real, general engine event (confirmed: DRAMATIC_SHAPE's own
   -- main.lua listens for it too) -- re-running on every firing rather than
   -- trying to filter for this one specific option is simpler and still
-  -- cheap (51 species patches).
+  -- cheap enough (one registry patch per registered species -- this used
+  -- to mean 51, now the full national_dex catalogue, still a one-off pass
+  -- over plain table lookups, not per-frame work).
   mod.events:on("mod.options_changed", function() mod.exports.reapplySpritePacks() end)
   return patched
 end
@@ -494,13 +630,13 @@ end
 -- restScale; every other species (and the non-species trainer pics) falls
 -- through to vanilla behavior, image-level battle_sprite_scales override
 -- included, untouched.
-local function installRestingScaleOverride(mod, speciesData, restScale)
+local function installRestingScaleOverride(mod, spritePackRosterFull, restScale)
   local BattleState = require("src.battle.BattleState")
   if BattleState.__galarGmaxDexScaleWrapped then return end
   BattleState.__galarGmaxDexScaleWrapped = true
 
   local ours = {}
-  for _, id in ipairs(speciesData.order) do ours[id] = true end
+  for _, id in ipairs(spritePackRosterFull) do ours[id] = true end
 
   local vanillaResolveBattleScale = BattleState.resolveBattleScale
   function BattleState.resolveBattleScale(data, side, path, species)
@@ -509,6 +645,100 @@ local function installRestingScaleOverride(mod, speciesData, restScale)
     end
     return vanillaResolveBattleScale(data, side, path, species)
   end
+end
+
+-- =============================================================================
+-- Gen 2 battle sprite position fix (front and back)
+-- =============================================================================
+-- Confirmed by direct source read (src/ui/gen2/BattleState.lua:563-635,
+-- drawPic): position is computed from the image's RAW, unscaled pixel
+-- dimensions against fixed box constants (enemy 56x56 at (96,0), player
+-- 48x48 at (16,48)), clamped so an oversized image pins to the box's
+-- corner -- THEN battleScaleFront/Back is applied as a symmetric shrink
+-- AROUND that already-wrong anchor point. For an image taller than the
+-- box (this mod's own battle art runs up to 123px/frame, vs vanilla's
+-- own largest sprite, Onix, at exactly 56x56 -- the box's real max), the
+-- math reduces algebraically to the bottom edge landing at y = h (the
+-- image's own raw height) regardless of scale -- no battleScaleFront/
+-- Back value can pull it back into the box through that mechanism alone.
+-- picScale/battleScaleFront/Back themselves resolve correctly (same
+-- field names, same data.pokemon registry Gen 1 uses, confirmed no
+-- Gen-2-renamed key here unlike encounters/sprites elsewhere) -- the bug
+-- is purely drawPic's own position math, not this mod's registration.
+--
+-- Fix: wrap drawPic for our own species only, computing the CORRECT
+-- box-relative position (bottom edge + horizontal center pinned to the
+-- box using the ALREADY-SCALED size -- matching what Gen 1's own
+-- frontPlacement/backPlacement comments describe as the actual intent),
+-- then applying the delta between that and whatever native would have
+-- computed as a love.graphics.translate around an otherwise completely
+-- unmodified call to native drawPic -- so palette/trueColor/hidden/
+-- vanish/trainer-swap/slide-animation handling inside drawPic (not
+-- reimplemented here) are never touched, only the position is
+-- corrected. Any non-roster species, or a roster species whose image
+-- already fits the box (delta == 0), is a pure passthrough with no
+-- behavior change.
+local function installGen2BattlePicPositionFix(mod, spritePackRosterFull)
+  local ok, Gen2BattleState = pcall(require, "src.ui.gen2.BattleState")
+  if not ok or type(Gen2BattleState) ~= "table" then
+    mod.log:warn("galar_gmax_dex: gen2 battle pic position fix: src.ui.gen2.BattleState not available: %s",
+      tostring(Gen2BattleState))
+    return
+  end
+  if Gen2BattleState.__galarPicPositionWrapped then return end
+  Gen2BattleState.__galarPicPositionWrapped = true
+
+  local ours = {}
+  for _, id in ipairs(spritePackRosterFull) do ours[id] = true end
+
+  local nativeDrawPic = Gen2BattleState.drawPic
+  function Gen2BattleState:drawPic(mon, back)
+    local species = mon and mon.species
+    if not (species and ours[species]) then
+      return nativeDrawPic(self, mon, back)
+    end
+    local image, _, path = self:pic(mon, back)
+    if not image then
+      return nativeDrawPic(self, mon, back)
+    end
+    local w, h = image:getDimensions()
+    local scale = self:picScale(path, mon, back)
+    local ex, ey, box
+    if back then
+      ex, ey, box = Gen2BattleState.PLAYER_PIC_TILE_X * 8, Gen2BattleState.PLAYER_PIC_TILE_Y * 8,
+        Gen2BattleState.PLAYER_PIC_TILES * 8
+    else
+      ex, ey, box = Gen2BattleState.ENEMY_PIC_TILE_X * 8, Gen2BattleState.ENEMY_PIC_TILE_Y * 8,
+        Gen2BattleState.ENEMY_PIC_TILES * 8
+    end
+    -- Replicates native's own unscaled-then-shrink math exactly, so we
+    -- know what it will actually draw at, then computes what SHOULD
+    -- have been drawn (bottom + horizontal center pinned to the box,
+    -- using the already-scaled size), and offsets by the delta.
+    local nativePx = back and (ex + math.floor((box - w) / 2))
+      or (ex + math.max(0, math.floor((box - w) / 2)))
+    local nativePy = back and (ey + (box - h)) or (ey + math.max(0, box - h))
+    if scale ~= 1 then
+      nativePx = nativePx + math.floor(w * (1 - scale) / 2)
+      nativePy = nativePy + math.floor(h * (1 - scale))
+    end
+    local correctPx = ex + (box - w * scale) / 2
+    local correctPy = ey + (box - h * scale)
+    local dx, dy = correctPx - nativePx, correctPy - nativePy
+    if dx == 0 and dy == 0 then
+      return nativeDrawPic(self, mon, back)
+    end
+    love.graphics.push()
+    love.graphics.translate(dx, dy)
+    local drawOk, err = pcall(nativeDrawPic, self, mon, back)
+    love.graphics.pop()
+    if not drawOk then
+      mod.log:warn("galar_gmax_dex: gen2 drawPic position fix failed for %s: %s",
+        tostring(species), tostring(err))
+    end
+  end
+
+  mod.log:info("galar_gmax_dex: gen2 battle sprite position fix installed")
 end
 
 -- =============================================================================
@@ -616,10 +846,33 @@ local function installSpriteAnimation(mod, playerSpriteSide)
     return state, sprite, total
   end
 
-  local function advance(battler, side, dt)
+  -- dt arrives from the engine's fixed logic step -- a game-speed/fast-
+  -- forward mechanism feeds FixedStep dt*speed, so accumulating raw dt
+  -- would make sprite cycling play N times faster at N times game speed
+  -- (confirmed: reported live, sprite cycling visibly speeding up with
+  -- game speed). Fix studied directly from
+  -- crystal_animated_sprites_with_shiny_visuals's own logicToReal helper
+  -- (that mod's main.lua:76-90) -- same technique: divide by the real,
+  -- native Game:logicSpeed() (src/core/Game.lua:241, cross-generation,
+  -- has its own Gen2Compat translation) to convert logic-step dt back
+  -- into real elapsed time, so sprite cycling always plays at 1x real
+  -- speed regardless of game speed. Deliberately scoped to ONLY this
+  -- animation-frame timer -- nothing else in this file reads dt, and nothing
+  -- about actual game logic speed changes.
+  local function logicToReal(dt, game)
+    local speed = 1
+    if game and type(game.logicSpeed) == "function" then
+      speed = game.logicSpeed(game) or 1
+    end
+    speed = tonumber(speed) or 1
+    if speed <= 0 then speed = 1 end
+    return (tonumber(dt) or (1 / 60)) / speed
+  end
+
+  local function advance(battler, side, dt, game)
     local state, sprite, total = updateBattler(battler, side)
     if not state then return end
-    state.elapsed = state.elapsed + dt * 1000
+    state.elapsed = state.elapsed + logicToReal(dt, game) * 1000
     local changed, guard = false, 0
     while state.elapsed >= FRAME_DURATION_MS and guard < 50 do
       state.elapsed = state.elapsed - FRAME_DURATION_MS
@@ -665,20 +918,30 @@ local function installSpriteAnimation(mod, playerSpriteSide)
       or (pf.ox or 0) ~= 0 or (pf.oy or 0) ~= 0
   end
 
+  -- Exposed (see mod.exports.advanceBattleSprites below) so OTHER
+  -- GalarGmaxDex files that freeze their own slice of BattleState:update
+  -- for an overlay of their own (the gimmick ring, the Gigantamax grow/
+  -- shrink sequence) can keep sprite frame-cycling running independently
+  -- instead of it silently stopping for as long as their overlay owns the
+  -- frame -- confirmed live: both did exactly that before this existed.
+  local function advanceBattleSprites(battle, dt)
+    if mod.options:get("animated_battle_sprites") == "false" then return end
+    if battle.player and not battle.showPlayerBack and not battle.sendingOut
+        and not shouldPauseAnim(battle, battle.player) then
+      local playerSide = playerSpriteSide.wantsPlayerFront() and "front" or "back"
+      advance(battle.player, playerSide, dt, battle.game)
+    end
+    if battle.enemy and not battle.showEnemyTrainer and not battle.enemySendingOut
+        and not shouldPauseAnim(battle, battle.enemy) then
+      advance(battle.enemy, "front", dt, battle.game)
+    end
+  end
+  mod.exports.advanceBattleSprites = advanceBattleSprites
+
   local vanillaUpdate = BattleState.update
   function BattleState:update(dt)
     local result = vanillaUpdate(self, dt)
-    if mod.options:get("animated_battle_sprites") ~= "false" then
-      if self.player and not self.showPlayerBack and not self.sendingOut
-          and not shouldPauseAnim(self, self.player) then
-        local playerSide = playerSpriteSide.wantsPlayerFront() and "front" or "back"
-        advance(self.player, playerSide, dt)
-      end
-      if self.enemy and not self.showEnemyTrainer and not self.enemySendingOut
-          and not shouldPauseAnim(self, self.enemy) then
-        advance(self.enemy, "front", dt)
-      end
-    end
+    advanceBattleSprites(self, dt)
     return result
   end
 
@@ -804,12 +1067,25 @@ end
 -- has finished loading, and "mods.loaded" is order-independent -- no
 -- dependency on manifest.json priority/declaration order between the two
 -- mods.
-local function installOverworldSpriteProvider(mod, speciesData)
+local function installOverworldSpriteProvider(mod, spritePackRosterFull)
   local oursByKey, oursByDex = {}, {}
-  for _, id in ipairs(speciesData.order) do
+  -- dex lookup used to read straight off species_data.lua's own stat
+  -- table; that table's gone (national_dex is the stat/dex source of
+  -- truth now), so this resolves dex through national_dex instead --
+  -- every one of these 51 species is a real, numbered Pokemon it knows
+  -- about. Best-effort: if national_dex isn't installed, oursByDex just
+  -- stays empty and dex-number lookups (not string-id ones) silently
+  -- don't resolve, same as any other optional-dependency gap in this mod.
+  local nd = mod.find and mod.find("national_dex")
+  local ndOk = nd and nd.exports and (nd.exports.apiVersion or 0) >= 1
+    and type(nd.exports.statsBySpecies) == "function"
+  for _, id in ipairs(spritePackRosterFull) do
     oursByKey[id] = true
-    local dex = speciesData.species[id] and speciesData.species[id].dex
-    if dex then oursByDex[dex] = id end
+    if ndOk then
+      local ok, rec = pcall(nd.exports.statsBySpecies, id)
+      local dex = ok and rec and (rec.baseDex or rec.dex)
+      if dex then oursByDex[dex] = id end
+    end
   end
 
   -- Our own lossless assets/overworld/ crop, frames=1 (no walker flag) --
@@ -918,9 +1194,9 @@ end
 -- rendering instead of whatever (correct) fate Wilds already had for it.
 -- makeEntity alone should already cover every real spawn, since that is
 -- the one place Wilds actually constructs a wild encounter's NPC.
-local function installWildDrawOverride(mod, speciesData)
+local function installWildDrawOverride(mod, spritePackRosterFull)
   local ours = {}
-  for _, id in ipairs(speciesData.order) do ours[id] = true end
+  for _, id in ipairs(spritePackRosterFull) do ours[id] = true end
 
   local function applyIfOurs(entity)
     if not entity then return end
@@ -995,9 +1271,9 @@ end
 -- optional_dependencies (manifest.json) plus deferring to "mods.loaded" --
 -- same ordering guarantee already relied on for the Wilds sprite provider
 -- above.
-local function installFollowerSpriteHook(mod, speciesData)
+local function installFollowerSpriteHook(mod, spritePackRosterFull)
   local ours = {}
-  for _, id in ipairs(speciesData.order) do ours[id] = true end
+  for _, id in ipairs(spritePackRosterFull) do ours[id] = true end
 
   local walkerImages = {}
   local function loadWalker(speciesId)
@@ -1259,7 +1535,7 @@ end
 -- optional_dependencies (manifest.json), which orders it first when
 -- present without requiring it (src/mods/Loader.lua Loader:_order:
 -- "optional dependencies order without requiring anything").
-local function installBigPartyIcons(mod, speciesData)
+local function installBigPartyIcons(mod, spritePackRosterFull)
   local PartyMenu = require("src.ui.PartyMenu")
   if PartyMenu.__galarIconScaleWrapped then return end
   PartyMenu.__galarIconScaleWrapped = true
@@ -1267,7 +1543,7 @@ local function installBigPartyIcons(mod, speciesData)
   local hasModernUI = mod.find("gen1_modern_ui") ~= nil
 
   local ours = {}
-  for _, id in ipairs(speciesData.order) do ours[id] = true end
+  for _, id in ipairs(spritePackRosterFull) do ours[id] = true end
 
   local bigIconImages = {}
   local function loadBigIcon(speciesId)
@@ -1317,6 +1593,83 @@ local function installBigPartyIcons(mod, speciesData)
     love.graphics.draw(img, x, y, 0, scale, scale)
     return true
   end
+end
+
+-- Gen 2 equivalent, deployed as the fix for a confirmed crash: the Gen 1
+-- version above requires("src.ui.PartyMenu"), which under a Gen 2 boot
+-- resolves to Gen2Compat.lua's own FACADE, not the real Gen 1 class.
+-- That facade lists "drawIcon" under its own documented `absent` set
+-- (Gen2Compat.lua: "PartyMenu.drawIcon is a STATIC under Gen 1 and a
+-- METHOD on Gold, so the same call would bind self = game and die inside
+-- iconFor") -- so `local vanillaDrawIcon = PartyMenu.drawIcon` silently
+-- captured nil, and every ordinary (non-roster) species' icon draw called
+-- that nil and crashed the instant the party list tried to render one --
+-- reproduced live opening the party window right after receiving a Gen 2
+-- starter. This requires the REAL native class directly
+-- (src.ui.gen2.PartyMenu, bypassing the facade entirely) and wraps its
+-- REAL method shape, confirmed by direct source read: `function
+-- PartyMenu:drawIcon(mon, px, py)` (src/ui/gen2/PartyMenu.lua:577) -- a
+-- method (self, not a `game` first-argument) taking only 3 params, not
+-- Gen 1's 7-argument static shape. Icon sprite handling ONLY -- the rest
+-- of Gen 2's party screen is untouched, matching the confirmed crash's
+-- exact scope.
+--
+-- Today's actual roster (spritePackRosterFull, this mod's own Gigantamax-
+-- capable species list) has zero Gen 2 species in it, so the "ours[species]"
+-- branch below is currently unreachable in practice -- this is here so a
+-- future Gen 2 roster addition already has a correctly-shaped hook to
+-- land on, not because it does anything visible today. Every species not
+-- in that (currently empty, for Gen 2) set just calls straight through to
+-- Gold's own real drawIcon, unmodified -- which is the actual fix: a
+-- correct, non-nil pass-through instead of a crash.
+local function installBigPartyIconsGen2(mod, spritePackRosterFull)
+  local ok, Party2 = pcall(require, "src.ui.gen2.PartyMenu")
+  if not ok or type(Party2) ~= "table" then return end
+  if Party2.__galarIconScaleWrapped then return end
+  Party2.__galarIconScaleWrapped = true
+
+  local ours = {}
+  for _, id in ipairs(spritePackRosterFull) do ours[id] = true end
+
+  local bigIconImages = {}
+  local function loadBigIcon(speciesId)
+    local path = iconPath(mod, speciesId)
+    local cached = bigIconImages[path]
+    if cached ~= nil then
+      if cached == false then return nil end
+      return cached
+    end
+    local imgOk, img = pcall(love.graphics.newImage, path)
+    if imgOk and img then
+      img:setFilter("nearest", "nearest")
+      bigIconImages[path] = img
+      return img
+    end
+    bigIconImages[path] = false
+    return nil
+  end
+
+  local vanillaDrawIcon = Party2.drawIcon
+  function Party2:drawIcon(mon, px, py)
+    local species = mon and mon.species
+    if not (species and ours[species]) then
+      return vanillaDrawIcon(self, mon, px, py)
+    end
+    local img = loadBigIcon(species)
+    if not img then
+      return vanillaDrawIcon(self, mon, px, py)
+    end
+    -- Static single frame, no bounce cycling, no held-item marker overlay
+    -- -- same accepted simplification the Gen 1 version above already
+    -- uses for its own custom-art path.
+    local iw = img:getWidth()
+    local scale = 16 / iw
+    love.graphics.setColor(1, 1, 1, 1)
+    love.graphics.draw(img, px, py, 0, scale, scale)
+    return true
+  end
+
+  mod.log:info("galar_gmax_dex: big party icons (gen2) installed")
 end
 
 local MOVE_LIST_TEXT_X = 48
@@ -1570,16 +1923,48 @@ return function(mod)
   -- the first thing Lua reported trying).
   if not package.preload["src.pokemon.ModernStats"] then
     package.preload["src.pokemon.ModernStats"] = function()
-      return loadSibling(mod, "engine_modern_stats.lua")
+      return loadSibling(mod, "stats/engine_modern_stats.lua")
     end
   end
   if not package.preload["src.pokemon.MoveCategory"] then
     package.preload["src.pokemon.MoveCategory"] = function()
-      return loadSibling(mod, "engine_move_category.lua")
+      return loadSibling(mod, "combat/engine_move_category.lua")
     end
   end
-  local installSaveScrub = loadSibling(mod, "save_scrub.lua")
+  local installSaveScrub = loadSibling(mod, "stats/save_scrub.lua")
   installSaveScrub(mod)
+
+  -- Wild encounters get fresh, DV-independent modern IVs/EVs the moment
+  -- BattleState.newWild builds them -- see wild_modern_ivs.lua for the
+  -- full reasoning. Needs ModernStats resolvable (package.preload just
+  -- above), so this stays right after installSaveScrub.
+  local installWildModernIvs = loadSibling(mod, "stats/wild_modern_ivs.lua")
+  installWildModernIvs(mod)
+
+  -- Trainer mons: an open provider API other mods can feed real modern
+  -- stats through (mod.exports.registerTrainerStatsProvider), falling back
+  -- to the DV/stat-exp conversion system when none is registered for a
+  -- given mon -- see trainer_modern_stats.lua for the full reasoning.
+  local installTrainerModernStats = loadSibling(mod, "stats/trainer_modern_stats.lua")
+  installTrainerModernStats(mod)
+
+  -- Gen 2 (Gold): a separate implementation from the two installs above --
+  -- no shared BattleState/newWild/newTrainer with Gen 1, see
+  -- gen2_modern_stats.lua's own header. Uses
+  -- mod.exports.resolveTrainerSpec, just registered above, so this stays
+  -- after installTrainerModernStats.
+  local installGen2ModernStats = loadSibling(mod, "stats/gen2_modern_stats.lua")
+  installGen2ModernStats(mod)
+
+  -- EV yield on faint: every mon that gains EXP from a KO gains that
+  -- species' national_dex EV yield too -- listens to battle.exp_gained,
+  -- same event name/compatible payload in both generations, so one file
+  -- covers both -- see ev_yield_on_faint.lua for the full reasoning. Purely
+  -- event-driven (no install-time species/state dependency beyond
+  -- ModernStats being resolvable), so ordering relative to the installs
+  -- above doesn't matter beyond happening after package.preload is set up.
+  local installEvYieldOnFaint = loadSibling(mod, "stats/ev_yield_on_faint.lua")
+  installEvYieldOnFaint(mod)
 
   -- Registered unconditionally, before the species-registration gate
   -- below: the options screen is a completely independent concern from
@@ -1593,12 +1978,39 @@ return function(mod)
     return false
   end
 
-  local speciesData = loadSibling(mod, "species_data.lua")
+  -- Phase 1 species registration used to carry its own stat/type/dex data
+  -- AND actually register each species (species_data.lua's species={}
+  -- table, 51 species, via mod.content.pokemon:register). Both retired --
+  -- explicit user correction: this mod is a CONSUMER of species
+  -- existence, never a co-registrant. National_dex (or the base engine,
+  -- for the cart-native roster) is who actually calls :register() for a
+  -- given species; calling it a second time throws ("pokemon already
+  -- registered: BULBASAUR", confirmed live -- src/mods/Registry.lua's
+  -- register is create-only, no upsert). species_data.lua's other two
+  -- roles split into their own files: custom_sprite_species.lua (the pure
+  -- id list, for the sprite-fallback-safety phase below, which has
+  -- nothing to do with where stat data comes from) and
+  -- species_evolutions.lua (evolutions + evolution items, for all 1025
+  -- national-dex species -- confirmed national_dex's own `evolutions`
+  -- field is unpopulated for every record, see that file's own header --
+  -- so THIS is the one thing worth patching onto whatever's already
+  -- registered, native or national_dex-sourced alike).
+  local spriteSpeciesList = loadSibling(mod, "species/custom_sprite_species.lua")
+  local spritePackRosterFull = loadSibling(mod, "species/sprite_pack_roster_full.lua")
+  local nativeVanillaSpecies = loadSibling(mod, "species/native_vanilla_species.lua")
+  local speciesEvolutions = loadSibling(mod, "species/species_evolutions.lua")
 
   installHappinessEvolution(mod)
+  -- Must run before the evolutions-patching loop below actually matters
+  -- (schema cross-validation is a post-merge pass, but registering these
+  -- alongside HAPPINESS keeps every evolution_methods registration in one
+  -- place) -- see exotic_evolution_stubs.lua for why this is required for
+  -- the mod to load at all, not just nice-to-have.
+  local installExoticEvolutionStubs = loadSibling(mod, "species/exotic_evolution_stubs.lua")
+  installExoticEvolutionStubs(mod)
 
   local itemIds = {}
-  for id, def in pairs(speciesData.items) do
+  for id, def in pairs(speciesEvolutions.items) do
     mod.content.items:register(id, {
       id = id, name = def.name, price = def.price or 0,
       tossable = true, needsTarget = true,
@@ -1607,78 +2019,98 @@ return function(mod)
   end
   installEvolutionItems(mod, itemIds)
 
-  local registered = 0
-  for _, id in ipairs(speciesData.order) do
-    local def = speciesData.species[id]
-    local types = {}
-    for i, t in ipairs(def.types) do types[i] = engineTypeId(t) end
-    local primary = types[1]
+  -- Patch evolutions onto whatever's already registered -- skip (not
+  -- error) a species nothing has registered yet, e.g. national_dex
+  -- absent/disabled and the species isn't cart-native either. Gracefully
+  -- degraded, not a hard requirement: unlike the old registration-owning
+  -- design, this mod no longer needs national_dex present to do SOMETHING
+  -- useful (evolutions for the native roster still patch in fine).
+  --
+  -- Per-ROW filtering too, not just per-species: an evolution row's own
+  -- `species` (the evolution TARGET) is just as much an f.id("pokemon")
+  -- reference as this loop's own source-species check -- Schemas.lua's
+  -- crossValidate treats an unresolved target exactly the same as an
+  -- unresolved evolution_methods id (a blocking "unresolved reference"
+  -- error, confirmed live). A source species can be perfectly real and
+  -- registered while one of ITS evolution targets isn't yet (e.g.
+  -- national_dex not installed, or a newer species it doesn't cover) --
+  -- dropping only the unresolvable ROW keeps every other real evolution
+  -- on that same mon intact instead of losing the whole species' list
+  -- over one bad branch.
+  -- Gen 2's pokemon record schema (Schemas.lua's gen2Fields for R.pokemon)
+  -- shapes an evolution row differently from Gen 1's -- confirmed by
+  -- reading it directly: the target-species key is `into`, not `species`
+  -- (Gen 1's key), and `species` isn't a recognized field at all under
+  -- Gen 2 -- patching a Gen1-shaped row onto a Gen 2 boot fails schema
+  -- validation ("unknown field" + "missing required field (pokemon id)"
+  -- for every affected species, confirmed live). `method`/`level`/`item`
+  -- are the same key names both shapes; Gen 2 also has optional
+  -- `time`/`comparison` fields this pass has no source data for, so
+  -- they're simply omitted (same "phased honest, not silently wrong"
+  -- treatment already used for the 23 custom items/exotic methods).
+  local GameVersion = require("src.core.GameVersion")
+  local isGen2Boot = GameVersion.generation(GameVersion.get()) == 2
 
-    local templateId = SPECIAL_TEMPLATE[id] or TEMPLATE_FOR_TYPE[primary] or "RATTATA"
-    local template = mod.content.pokemon:get(templateId)
-    if not template then
-      mod.log:error("galar_gmax_dex: fallback template %s missing for %s, skipping", templateId, id)
+  local patchedEvolutions, skippedSpecies, droppedRows = 0, 0, 0
+  for id, evoList in pairs(speciesEvolutions.evolutions) do
+    if mod.content.pokemon:get(id) then
+      local resolvable = {}
+      for _, evo in ipairs(evoList) do
+        if mod.content.pokemon:get(evo.species) then
+          if isGen2Boot then
+            resolvable[#resolvable + 1] = {
+              method = evo.method, into = evo.species,
+              level = evo.level, item = evo.item,
+            }
+          else
+            resolvable[#resolvable + 1] = evo
+          end
+        else
+          droppedRows = droppedRows + 1
+        end
+      end
+      mod.content.pokemon:patch(id, { evolutions = resolvable })
+      patchedEvolutions = patchedEvolutions + 1
     else
-      local hw = derivedHeightWeight(def.heightM, def.weightKg)
-      mod.content.pokemon:register(id, {
-        id = id,
-        name = def.name,
-        dex = def.dex,
-        types = types,
-        baseStats = def.baseStats,
-        catchRate = def.catchRate,
-        baseExp = def.baseExp,
-        growthRate = def.growthRate,
-        happiness = def.happiness or 70,
-        -- Phase 2 replaces this placeholder with the real learnset.
-        level1Moves = { "TACKLE" },
-        learnset = {},
-        tmhm = {},
-        evolutions = def.evolutions,
-        spriteFront = template.spriteFront,
-        spriteBack = template.spriteBack,
-        frontSize = template.frontSize or 7,
-        battleScaleFront = template.battleScaleFront,
-        battleScaleBack = template.battleScaleBack,
-        icon = { image = iconPath(mod, id) },
-        dexEntry = {
-          kind = def.dexEntry.kind,
-          heightFt = hw.heightFt, heightIn = hw.heightIn,
-          weight = hw.weight,
-          heightM = def.heightM, weightKg = def.weightKg,
-          text = def.dexEntry.text,
-        },
-      })
-      mod.content.icons:register(id, { image = iconPath(mod, id) })
-      registered = registered + 1
+      skippedSpecies = skippedSpecies + 1
     end
   end
-
-  local maxDex = 0
-  for _, def in pairs(speciesData.species) do
-    if def.dex > maxDex then maxDex = def.dex end
-  end
-  local okDexSize, currentDexSize = pcall(function()
-    return mod.content.constants:get("dexSize")
-  end)
-  mod.content.constants:patch("dexSize",
-    math.max(okDexSize and tonumber(currentDexSize) or 0, maxDex))
-
-  mod.log:info("galar_gmax_dex: registered %d/%d species (Phase 1)", registered, #speciesData.order)
+  mod.log:info(
+    "galar_gmax_dex: patched evolutions onto %d species (%d species skipped unregistered, %d rows dropped for an unregistered target) (Phase 1)",
+    patchedEvolutions, skippedSpecies, droppedRows)
 
   -- ------- Phase 2: movepool -------
-  local movesData = loadSibling(mod, "moves_new.lua")
+  local movesData = loadSibling(mod, "combat/moves_new.lua")
   local movesRegistered = registerNewMoves(mod, movesData)
+  -- Exported so combat/learnset_ownership.lua's usability gate reads the
+  -- SAME completeness check registerNewMoves itself uses, not a second
+  -- copy -- confirmed drift bug caught this session: learnset_ownership.lua
+  -- had its own independent inline duplicate of this logic, missing both
+  -- the RemoveProtections and ProtectUser special cases added here, which
+  -- would have kept blocking Feint/Protect/Detect from ever being taught
+  -- even after they became genuinely complete.
+  mod.exports.isMoveDataComplete = isMoveDataComplete
 
-  local learnsetsData = loadSibling(mod, "learnsets_data.lua")
-  local patched = patchLearnsets(mod, learnsetsData)
+  -- Learnset ownership switch (explicit user decision, this session):
+  -- national_dex is the canonical "what can this species learn" source
+  -- (its unfiltered movesFull/movesByMethod, not its own filtered
+  -- learnset/levelMoves field -- see learnset_ownership.lua's own header
+  -- for why that field's filtering can't reflect this mod's own
+  -- completeness); GalarGmaxDex gates USABILITY on its own move-effect
+  -- completeness. Replaces the old combat/learnsets_data.lua's own
+  -- self-authored 51-species-only table -- superseded, no longer loaded,
+  -- left on disk rather than deleted since nothing else references it.
+  local installLearnsetOwnership = loadSibling(mod, "combat/learnset_ownership.lua")
+  local learnsetOwnership = installLearnsetOwnership(mod, movesData)
+  learnsetOwnership.reapplyLearnsets()
+  mod.events:on("save.loaded", learnsetOwnership.reapplyLearnsets)
+  mod.events:on("mod.options_changed", learnsetOwnership.reapplyLearnsets)
 
-  mod.log:info("galar_gmax_dex: registered %d new moves, patched %d/%d species learnsets (Phase 2)",
-    movesRegistered, patched, #speciesData.order)
+  mod.log:info("galar_gmax_dex: registered %d new moves (Phase 2)", movesRegistered)
 
   -- ------- Phase 3: Gigantamax moves and forms -------
-  local gmaxMovesData = loadSibling(mod, "gmax_moves.lua")
-  local gmaxData = loadSibling(mod, "gmax_data.lua")
+  local gmaxMovesData = loadSibling(mod, "gigantamax/gmax_moves.lua")
+  local gmaxData = loadSibling(mod, "gigantamax/gmax_data.lua")
   mod.exports.gmaxData = gmaxData
 
   local gmaxMovesRegistered = installGigantamaxMoves(mod, gmaxMovesData, gmaxData)
@@ -1689,23 +2121,39 @@ return function(mod)
     gmaxMovesRegistered, #gmaxData.order, #gmaxData.order)
 
   -- ------- Phase 4: battle sprites -------
-  local frameCounts = loadSibling(mod, "sprite_frames.lua")
+  local frameCounts = loadSibling(mod, "overworld/sprite_frames_full.lua")
   local playerSpriteSide = installPlayerSpriteSide(mod)
-  local spritesPatched = installSpriteAssetPacks(mod, speciesData, frameCounts)
-  installRestingScaleOverride(mod, speciesData, BASE_SPRITE_SCALE)
+  local spritesPatched = installSpriteAssetPacks(mod, spritePackRosterFull, frameCounts, nativeVanillaSpecies)
+  installRestingScaleOverride(mod, spritePackRosterFull, BASE_SPRITE_SCALE)
+  installGen2BattlePicPositionFix(mod, spritePackRosterFull)
   installSpriteAnimation(mod, playerSpriteSide)
   mod.log:info("galar_gmax_dex: patched %d/%d species with sliced, animated battle sprites (Phase 4)",
-    spritesPatched, #speciesData.order)
+    spritesPatched, #spritePackRosterFull)
 
   -- ------- Phase 5: overworld sprite provider (optional: Wilds of Kanto) -------
-  installOverworldSpriteProvider(mod, speciesData)
-  installWildDrawOverride(mod, speciesData)
-  installFollowerSpriteHook(mod, speciesData)
+  installOverworldSpriteProvider(mod, spritePackRosterFull)
+  installWildDrawOverride(mod, spritePackRosterFull)
+  installFollowerSpriteHook(mod, spritePackRosterFull)
   installFollowerOrphanCleanup(mod)
-  installBigPartyIcons(mod, speciesData)
+  -- Confirmed crash fix: the Gen 1 version below requires("src.ui
+  -- .PartyMenu"), which under a Gen 2 boot resolves to a facade that
+  -- reports drawIcon as absent -- see installBigPartyIconsGen2's own
+  -- header for the full mechanism. Dispatch by generation instead of
+  -- always installing the Gen 1-shaped wrap.
+  local GameVersionForIcons = require("src.core.GameVersion")
+  if GameVersionForIcons.generation(GameVersionForIcons.get()) == 2 then
+    installBigPartyIconsGen2(mod, spritePackRosterFull)
+  else
+    installBigPartyIcons(mod, spritePackRosterFull)
+  end
 
   -- ------- Phase 6: wild encounter area placements -------
-  local installAreaEncounters = loadSibling(mod, "area.lua")
+  -- area.lua now self-gates by generation internally (an early Gen 2
+  -- section using the real gen2Keys/gen2GrassRow registry shape, an
+  -- early return before ever reaching the Kanto-map-id Gen 1 body) --
+  -- always loaded, not skipped here, so its own Gen 2 content actually
+  -- runs.
+  local installAreaEncounters = loadSibling(mod, "overworld/area.lua")
   installAreaEncounters(mod)
 
   -- ------- Phase 7 (W1): native overworld wild-spawn engine -------
@@ -1717,14 +2165,14 @@ return function(mod)
   -- / installFollowerSpriteHook above are now dead weight if those mods
   -- are disabled (both are no-ops when their target mod isn't found) --
   -- left in place for now rather than removed mid-transition.
-  local installOverworldSpawns = loadSibling(mod, "overworld_spawns.lua")
+  local installOverworldSpawns = loadSibling(mod, "overworld/overworld_spawns.lua")
   installOverworldSpawns(mod)
 
   -- ------- Phase 8 (F1): native follower engine -------
   -- Full replacement for Followers EX, per the same decision as Phase 7.
   -- Must run after Phase 7: reuses its mod.exports.wildSpriteIdFor rather
   -- than re-registering the same sprite ids.
-  local installOverworldFollowers = loadSibling(mod, "overworld_followers.lua")
+  local installOverworldFollowers = loadSibling(mod, "overworld/overworld_followers.lua")
   installOverworldFollowers(mod)
 
   -- ------- Phase 9: Dramatic Shape voxel billboard override (optional) -------
@@ -1732,7 +2180,7 @@ return function(mod)
   -- across the solid/shadow/occlusion passes -- see the file's own
   -- comment). Must run after Phase 7: reuses mod.exports.wildSpriteIdFor.
   -- No-ops entirely if Dramatic Shape isn't installed.
-  local installVoxelBillboards = loadSibling(mod, "voxel_billboards.lua")
+  local installVoxelBillboards = loadSibling(mod, "overworld/voxel_billboards.lua")
   installVoxelBillboards(mod)
 
   installMoveNameDisplay(mod)
@@ -1743,7 +2191,7 @@ return function(mod)
   -- and to gen1_modern_ui's own modern-styled list rendering when that mod
   -- is present. See modern_stats_screen.lua's own header for why this is
   -- a party-submenu screen rather than a SummaryMenu edit.
-  local installModernStatsScreen = loadSibling(mod, "modern_stats_screen.lua")
+  local installModernStatsScreen = loadSibling(mod, "stats/modern_stats_screen.lua")
   installModernStatsScreen(mod)
 
   -- ------- Phase 11: native modern combat formulas -------
@@ -1756,15 +2204,56 @@ return function(mod)
   -- than a raw monkey-patch -- no async wait state, no protocol, no
   -- separate process. Applies to every battle (wild, trainer, link), not
   -- just wild ones.
-  local installModernCombat = loadSibling(mod, "modern_combat.lua")
+  local installModernCombat = loadSibling(mod, "combat/modern_combat.lua")
   installModernCombat(mod)
-  local installModernCombatProtect = loadSibling(mod, "modern_combat_protect.lua")
+  local installModernCombatProtect = loadSibling(mod, "combat/modern_combat_protect.lua")
   installModernCombatProtect(mod)
+
+  -- Phase 1 of the move-effect completion pipeline: wires moves_new.lua's
+  -- stat-stage-change stubs to modern_combat.lua's changeStage primitive.
+  -- Split into its own sibling file rather than grown into modern_combat.lua
+  -- (~56 registrations) -- see that file's own header for the full
+  -- grounding. Must load after modern_combat.lua (consumes its exports).
+  local installModernMovepoolStages = loadSibling(mod, "combat/modern_movepool_stages.lua")
+  installModernMovepoolStages(mod)
+
+  -- Phase 2 of the move-effect completion pipeline: status-infliction
+  -- stubs (burn/paralyze/poison secondaries, Flatter/Swagger's combined
+  -- stat+confuse) and recoil/drain/heal/two-turn-charge stubs. Two
+  -- siblings, not one -- see each file's own header for why the two
+  -- buckets need different move_effects record shapes (kind="secondary"+
+  -- run vs. kind="full"+afterDamage/charge). Both load after
+  -- modern_movepool_stages.lua for load-order consistency, though only
+  -- modern_movepool_status.lua/modern_movepool_damage.lua's primary
+  -- heals actually need modern_combat.lua's exports.
+  local installModernMovepoolStatus = loadSibling(mod, "combat/modern_movepool_status.lua")
+  installModernMovepoolStatus(mod)
+  local installModernMovepoolDamage = loadSibling(mod, "combat/modern_movepool_damage.lua")
+  installModernMovepoolDamage(mod)
+
+  -- Phase 3 of the move-effect completion pipeline: Metal Burst/Mirror
+  -- Coat (Detect's patch lives in modern_combat_protect.lua itself, next
+  -- to its own PROTECT patch; Feint's bypassesProtect is plain moves_new
+  -- .lua data + a MOVE_REGISTER_FIELDS entry above -- neither needs this
+  -- file). Loaded after modern_combat_protect.lua (installed above) so its
+  -- target.protected checks see a real flag either way, though load order
+  -- between the two doesn't actually matter here -- both only read/write
+  -- battler fields at battle time, never at load time.
+  local installModernMovepoolCounter = loadSibling(mod, "combat/modern_movepool_counter.lua")
+  installModernMovepoolCounter(mod)
+
+  -- Volatile statuses native combat never had a mechanic for at all:
+  -- Attract, Taunt, Torment (plus the move data that makes Gen 2's own
+  -- already-complete Encore mechanism reachable for the first time) --
+  -- see modern_status_effects.lua's own header for the full per-engine
+  -- enforcement-touch-point grounding.
+  local installModernStatusEffects = loadSibling(mod, "combat/modern_status_effects.lua")
+  installModernStatusEffects(mod)
 
   -- Shared theme/panel primitives (colors, panel(), printText(), cursor,
   -- HP bar) -- one module so battle and every menu screen below read as
   -- one coherent UI instead of per-screen one-off looks.
-  local UiTheme = loadSibling(mod, "ui_theme.lua")
+  local UiTheme = loadSibling(mod, "ui/ui_theme.lua")
 
   -- Own battle scene, gated on custom_battle_scene -- see that file's own
   -- header for the full grounding (verified against real engine source,
@@ -1772,7 +2261,7 @@ return function(mod)
   -- foundation build: forces OG layout, strips the plain white
   -- background, hands the renderer a placeholder-color canvas -- proves
   -- the render pipeline before real scene content is built on it.
-  local installCustomBattleScene = loadSibling(mod, "custom_battle_scene.lua")
+  local installCustomBattleScene = loadSibling(mod, "combat/custom_battle_scene.lua")
   installCustomBattleScene(mod, UiTheme)
 
   -- ------- Phase 12: custom menu takeover, party screen first -------
@@ -1781,11 +2270,11 @@ return function(mod)
   -- render.hud suppress-and-replace pattern its own author documents),
   -- generalized from the battle scene's own render.hud panel technique.
   -- Gated on custom_menu_scene, independent of custom_battle_scene so
-  -- either can be toggled alone. Phase 1 scope: the plain party overview
-  -- only -- see custom_party_scene.lua's own header for what's
-  -- deliberately not covered yet (battle switch prompts, TM/HM teach
-  -- mode) and why that's a flagged limit, not a silent gap.
-  local installCustomPartyScene = loadSibling(mod, "custom_party_scene.lua")
+  -- either can be toggled alone. The plain party overview is native/
+  -- vanilla, untouched; this only adds the MOVES/RELEARN/IV-EV party-
+  -- submenu extras vanilla doesn't have -- see custom_party_scene.lua's
+  -- own header for the reasoning.
+  local installCustomPartyScene = loadSibling(mod, "ui/custom_party_scene.lua")
   installCustomPartyScene(mod, UiTheme)
 
   -- ------- Phase 13: custom menu takeover, title/start/options/mods -------
@@ -1796,6 +2285,38 @@ return function(mod)
   -- grounding (Menu/OptionsMenu/ManagerState field names, why title/start
   -- menus need to be individually tagged rather than blanket-catching
   -- every Menu instance, and the MOD MENUS hub replication).
-  local installCustomMenuTakeover = loadSibling(mod, "custom_menu_takeover.lua")
+  local installCustomMenuTakeover = loadSibling(mod, "ui/custom_menu_takeover.lua")
   installCustomMenuTakeover(mod, UiTheme)
+
+  -- ------- Phase 14: Gigantamax gimmick ring -------
+  -- custom_battle_scene.lua's own ring-menu framework (mod.exports
+  -- .gimmickRing, installed above as part of installCustomBattleScene)
+  -- absorbs the design of the standalone "gimmick ring menu" mod
+  -- natively -- opens on a move-select grid boundary press. This
+  -- registers the actual Gigantamax mechanic (Max Moves, HP double,
+  -- 3-turn duration, size-up) as its first entry. Neither the reference
+  -- gimmick_menu nor Dynamax mods are required to be installed -- see
+  -- gimmick_dynamax.lua's own header for what was ported vs deliberately
+  -- left out (the animated grow/shrink sprite sequence -- a draw-code
+  -- change the standing "leave canvas untouched" rule doesn't cover).
+  local installGigantamax = loadSibling(mod, "gigantamax/gimmick_dynamax.lua")
+  installGigantamax(mod, mod.exports.gimmickRing)
+
+  -- ------- Phase 15: Gen 2 move-type readout ("Gen 2 WIDE") -------
+  -- Independent of everything above -- own option (gen2_wide_layout),
+  -- own battle.overlay hook, touches nothing Phase 14/custom_battle_scene
+  -- already owns. See gen2_wide_scene.lua's own header for why this is a
+  -- same-box addition rather than a real wider canvas (Gen 2 has no
+  -- engine-level mechanism for the latter, confirmed this session).
+  local installGen2WideScene = loadSibling(mod, "combat/gen2_wide_scene.lua")
+  installGen2WideScene(mod)
+
+  -- ------- Phase 16: move-availability gate (0-PP-style blocking) -------
+  -- Installed LAST, deliberately: wraps BattleState:update on both
+  -- generations and must be the outermost layer so its input check runs
+  -- before every other :update wrap installed above (sprite animation,
+  -- custom_battle_scene, gimmick_dynamax, gen2_wide_scene) gets a chance
+  -- to consume the frame -- see move_availability_gate.lua's own header.
+  local installMoveAvailabilityGate = loadSibling(mod, "combat/move_availability_gate.lua")
+  installMoveAvailabilityGate(mod, learnsetOwnership.isMoveUsable)
 end
