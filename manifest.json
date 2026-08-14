@@ -1,6 +1,6 @@
 {
-  "id": "g9-battles",
-  "name": "G9-Battle Engine",
+  "id": "g9-battle-engine",
+  "name": "g9-battle-engine",
   "version": "1.1.0",
   "entry": "main.lua",
   "api": 2,
