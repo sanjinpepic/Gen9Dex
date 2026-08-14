@@ -1,7 +1,7 @@
 {
-  "id": "galar_gmax_dex",
-  "name": "G9-National Dex",
-  "version": "0.1.0",
+  "id": "g9-battles",
+  "name": "G9-Battle Engine",
+  "version": "1.1.0",
   "entry": "main.lua",
   "api": 2,
   "game_version": ">=0.1.45",
@@ -12,5 +12,5 @@
   "options_schema": "options.lua",
   "dependencies": ["national_dex"],
   "optional_dependencies": [],
-  "description": "A Gigantamax-capable custom battle-scene framework for the 34 Gigantamax species and their evolution lines. Consumes national_dex (optional) for species stats/types/sprites where installed, patching in evolution data and a modern IV/EV stat system on top; degrades gracefully to the native roster without it."
+  "description": "4 gimmicks, updated battle engine, overworld encounters, followers, alphamon ."
 }
