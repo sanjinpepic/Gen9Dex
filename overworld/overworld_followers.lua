@@ -24,25 +24,14 @@
 -- present-only mod.content.render_pipelines entry is the same documented,
 -- public mechanism Wilds itself relies on for exactly this problem.
 return function(mod)
-  -- Followers EX (lib/ControlEngine.lua) is a full, actively-installed
-  -- control/pack/leader system (pack size, box leader, control-mode
-  -- switching, ledge hops, Yellow-specific companion handling) -- reading
-  -- its real source this session showed it is far more than a sprite
-  -- lookup: it owns the entire party-follower feature, spawning its own
-  -- trailer NPCs independently of anything below. If this file's own F1
-  -- engine also spawned a follower NPC alongside it, the player would see
-  -- two followers trailing (one from each system) rather than one wrong
-  -- one. So when Followers EX is present, this whole native replacement
-  -- stays inactive -- the correct-species fix lives in main.lua's
-  -- installFollowerSpriteHook, which patches Followers EX's own sprite
-  -- resolution/draw in place instead of competing with it. This mirrors
-  -- the same "if X is present, adjust for X; else use our own" pattern
-  -- already used for gen1_modern_ui's party icons.
-  if mod.find("FOLLOWERS_EX") then
-    mod.log:info("galar_gmax_dex: Followers EX present -- native follower engine (F1) stays inactive; installFollowerSpriteHook covers our species instead")
-    return
-  end
-
+  -- Followers EX compatibility (deferring to it when present, and the
+  -- main.lua installFollowerSpriteHook/installFollowerOrphanCleanup pair
+  -- that used to patch its sprite resolution in place) was removed
+  -- outright per explicit user instruction -- not required, redundant
+  -- with this file's own native F1 engine. This always runs now,
+  -- regardless of whether Followers EX happens to be installed; running
+  -- both together would spawn two followers trailing the player, so
+  -- Followers EX should be disabled in the Mod Manager if present.
   local Game = require("src.core.Game")
 
   -- Gen 2: skip this file's own Gen1-NPC/Collision-based F1 engine
@@ -54,9 +43,7 @@ return function(mod)
   -- extension points (the same file-local-upvalue pattern Gen2Compat
   -- .lua's own debug.setupvalue note describes for Gen 1 follower mods)
   -- -- adjusting the real thing instead of porting F1's own trailing
-  -- algorithm against a different Npc/Player field vocabulary. Same
-  -- "if X already does this, adjust for X" pattern the FOLLOWERS_EX
-  -- branch above already uses.
+  -- algorithm against a different Npc/Player field vocabulary.
   --
   -- Known, accepted gap, not fixed here: Gen 2's World:tryConnection
   -- never calls Follower.rebase() on a map-seam crossing (confirmed by
@@ -161,12 +148,14 @@ return function(mod)
   local FOLLOWER_INDEX = 98 -- synthetic, clear of any map's real objects (Yellow's own Pikachu uses 99)
 
   -- ------- species -> sprite lookup, shared with overworld_spawns.lua ---
-  -- Both wild spawns and the follower draw the exact same native walker
-  -- art (assets/wild_walkers/<ID>.png); overworld_spawns.lua already
-  -- registered a sprite id per available species this same mod load, so
-  -- this reuses that registry instead of re-registering (mod.content.
-  -- sprites:register would error on a duplicate id) or duplicating the
-  -- directory scan. Falls back to an empty table (follower simply can't
+  -- Both wild spawns and the follower reference the exact same registered
+  -- native sprite id (SPRITE_GGD_WILD_<species>, all sharing one generic
+  -- assets/wild_walkers/placeholder.png -- see overworld_spawns.lua's own
+  -- Phase 1 header for why a shared placeholder is correct here, not a
+  -- per-species asset); overworld_spawns.lua already registered one per
+  -- species this same mod load, so this reuses that registry instead of
+  -- re-registering (mod.content.sprites:register would error on a
+  -- duplicate id). Falls back to an empty table (follower simply can't
   -- spawn) if load order or an earlier failure left it unset -- never a
   -- hard error.
   local function spriteIdFor(species)

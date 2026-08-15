@@ -1,4 +1,4 @@
--- Galar Gigantamax Dex -- Phases 1-4: species/evolutions/typing, movepool,
+﻿-- Galar Gigantamax Dex -- Phases 1-4: species/evolutions/typing, movepool,
 -- Gigantamax moves/forms, and full animated battle sprites.
 --
 -- Phase 1 registers every species national_dex reports (the base-stat/
@@ -211,6 +211,13 @@ local function isMoveDataComplete(def)
     -- gate would block selecting either of them, despite both being
     -- fully functional.
     or def.functionCode == "ProtectUser"
+    -- Round's real bonus (double power right after an ally uses Round
+    -- the same turn) is a doubles-only mechanic -- this engine is
+    -- confirmed singles-only, so there is no ally slot for the
+    -- condition to ever read. Nothing left to implement, same
+    -- "structurally inert" reasoning as the exemptions above, not a
+    -- guessed-away stub.
+    or def.functionCode == "UsedAfterAllyRoundWithDoublePower"
 end
 
 local function registerNewMoves(mod, movesData)
@@ -966,6 +973,17 @@ local function installSpriteAnimation(mod, playerSpriteSide)
 
   local function advance(battler, side, dt, game)
     local state, sprite, total = updateBattler(battler, side)
+    -- TEMP DIAGNOSTIC (Gen 2 animation debug, remove once confirmed working):
+    -- fires once per updateBattler call where state never even got created
+    -- (total <= 1 or resolveSpritePack came back nil) -- tells us if the
+    -- chain breaks THIS early (never even tries to animate) vs later.
+    if not state and mod.__galarAnimDebugOnce ~= (battler and battler.species) then
+      mod.__galarAnimDebugOnce = battler and battler.species
+      local sp = battler and battler.species and mod.exports.resolveSpritePack(battler.species)
+      mod.log:info("galar_gmax_dex: ANIM DEBUG no-state for species=%s side=%s frameCounts=%s",
+        tostring(battler and battler.species), tostring(side),
+        tostring(sp and sp.frameCounts and sp.frameCounts[side]))
+    end
     if not state then return end
     state.elapsed = state.elapsed + logicToReal(dt, game) * 1000
     local changed, guard = false, 0
@@ -978,6 +996,9 @@ local function installSpriteAnimation(mod, playerSpriteSide)
     if changed then
       local image = loadImage(sprite.framePath(side, state.frame))
       if image then battler.sprite = image end
+      -- TEMP DIAGNOSTIC: confirms frame-advancing IS happening at all.
+      mod.log:info("galar_gmax_dex: ANIM DEBUG frame advance species=%s side=%s frame=%d/%d",
+        tostring(state.species), tostring(side), state.frame, total)
     end
   end
 
@@ -1110,15 +1131,41 @@ local function installSpriteAnimation(mod, playerSpriteSide)
   -- same fail-open convention as every other resolver in this file.
   local GameVersion = require("src.core.GameVersion")
   local isGen2Boot = GameVersion.generation(GameVersion.get()) == 2
+  -- TEMP DIAGNOSTIC (Gen 2 animation debug, remove once confirmed working)
+  mod.log:info("galar_gmax_dex: ANIM DEBUG installSpriteAnimation reached hook section, isGen2Boot=%s",
+    tostring(isGen2Boot))
   if isGen2Boot then
+    mod.log:info("galar_gmax_dex: ANIM DEBUG registering pokemon.sprite hook")
     mod.hooks:wrap("pokemon.sprite", function(next, path, ctx)
       local ok, framePath = pcall(function()
         if not (ctx and ctx.kind == "battle" and ctx.mon) then return nil end
         local state = ctx.mon.__galarAnim
-        if not (state and state.frame and state.frame > 1) then return nil end
-        if state.species ~= ctx.mon.species or state.side ~= ctx.side then return nil end
+        -- TEMP DIAGNOSTIC: throttled to once per distinct (species,side,
+        -- reason) so a real battle doesn't spam thousands of lines.
+        local function dbg(reason)
+          local key = tostring(ctx.species) .. "|" .. tostring(ctx.side) .. "|" .. reason
+          mod.__galarSpriteHookDebug = mod.__galarSpriteHookDebug or {}
+          if mod.__galarSpriteHookDebug[key] then return end
+          mod.__galarSpriteHookDebug[key] = true
+          mod.log:info("galar_gmax_dex: ANIM DEBUG hook species=%s side=%s -> %s",
+            tostring(ctx.species), tostring(ctx.side), reason)
+        end
+        if not (state and state.frame and state.frame > 1) then
+          dbg("no-state-or-frame1 (state=" .. tostring(state ~= nil)
+            .. " frame=" .. tostring(state and state.frame) .. ")")
+          return nil
+        end
+        if state.species ~= ctx.mon.species or state.side ~= ctx.side then
+          dbg("mismatch (state.species=" .. tostring(state.species) .. " state.side="
+            .. tostring(state.side) .. ")")
+          return nil
+        end
         local sprite = mod.exports.resolveSpritePack(state.species)
-        if not (sprite and sprite.framePath) then return nil end
+        if not (sprite and sprite.framePath) then
+          dbg("no-resolveSpritePack")
+          return nil
+        end
+        dbg("OVERRIDE frame " .. tostring(state.frame))
         return sprite.framePath(state.side, state.frame)
       end)
       return next((ok and framePath) or path, ctx)
@@ -1155,37 +1202,6 @@ end
 -- love.graphics transform anchored at the text's own top-left, not a
 -- per-glyph change, so short names that already fit are left at the
 -- vanilla draw's normal size untouched.
--- =============================================================================
--- Shared overworld/follower sprite fallback: closest base-game species
--- =============================================================================
--- Explicit user decision, replacing the earlier "our own lossless crop" /
--- "our own native walker sheet of our own art" attempts for these two
--- integration points: both kept coming out oversized or duplicated once
--- actually tested live (Wilds' legacy scale path, and whatever native-format
--- assumption broke down for FOLLOWERS_EX's own trailer/stock-companion
--- system) and neither could be fully root-caused without live debugging
--- access this environment doesn't have. Instead of chasing that, our
--- species borrow the closest base-game species' own overworld art outright
--- -- real 151-dex sprites already proven correct (native 16x96 walker
--- format, already sized/animated right in every pipeline that consumes
--- them) in both Wilds and FOLLOWERS_EX, by body-plan category:
---   birds -> PIDGEY, bugs -> WEEDLE, plants -> BULBASAUR,
---   everything else (humanoid, quadruped, ghost, blob, ...) -> CHARMANDER
--- Categorized by hand from each species' actual body plan, not from its
--- battle type (type doesn't reliably predict body shape -- e.g. Silicobra
--- is GROUND but snake-shaped, Toxtricity is ELECTRIC/POISON but humanoid).
-local OVERWORLD_FALLBACK_SPECIES = {
-  -- birds
-  ROOKIDEE = "PIDGEY", CORVISQUIRE = "PIDGEY", CORVIKNIGHT = "PIDGEY",
-  -- bugs
-  BLIPBUG = "WEEDLE", DOTTLER = "WEEDLE", ORBEETLE = "WEEDLE",
-  SIZZLIPEDE = "WEEDLE", CENTISKORCH = "WEEDLE",
-  -- plants
-  APPLIN = "BULBASAUR", FLAPPLE = "BULBASAUR", APPLETUN = "BULBASAUR",
-}
-local function overworldFallbackSpecies(speciesId)
-  return OVERWORLD_FALLBACK_SPECIES[speciesId] or "CHARMANDER"
-end
 
 -- =============================================================================
 -- Overworld sprite provider for Wilds of Kanto (overworld_wild_spawns)
@@ -1395,262 +1411,6 @@ local function installWildDrawOverride(mod, spritePackRosterFull)
     end)
     if not ok then
       mod.log:warn("galar_gmax_dex: failed to hook Wilds of Kanto entity creation for draw-size override")
-    end
-  end)
-end
-
--- =============================================================================
--- Follower/leader sprite hook for Followers EX (party mon walking as/behind
--- the player)
--- =============================================================================
--- Wild spawns (installOverworldSpriteProvider above) and the player's own
--- party follower are two completely separate systems in this mod ecosystem
--- -- confirmed by reading both source trees directly, not assumed. The
--- follower/leader sprite is owned entirely by FOLLOWERS_EX
--- (lib/ControlEngine.lua), which itself monkey-patches the real engine's
--- SpriteRenderer.resolveImage: for the follower-family sprite ids
--- (SPRITE_POKEPC_MON / SPRITE_PLAYER_POKEMON / SPRITE_PIKACHU) it builds a
--- path <PokePC pack root>/assets/sprites/follower_<SPECIES>.png and loads
--- it -- falling back to Charmander's art when that exact file doesn't
--- exist, which is silently what happened for every one of our species
--- (confirmed: ControlEngine.lua's getFollowerImage has "if not img then
--- img = Assets.image(followerPath('CHARMANDER')) end", no other
--- fallback). There is no per-species extension hook in FOLLOWERS_EX itself
--- -- the fix per user decision is to wrap the same global engine method a
--- second time, layered on top of FOLLOWERS_EX's own wrap, and answer for
--- our species ourselves before its Charmander fallback ever runs.
---
--- Species identity at this layer comes from the sprite def's own image
--- path (self.def.image:match("follower_([%w_]+)%.png")), the exact same
--- technique ControlEngine.lua's own monSpeciesShinyFromDef uses -- that
--- path already embeds the requested species (set by whichever caller
--- created this SpriteRenderer) regardless of whether the file exists on
--- disk, so this does not need to re-derive "who is the current leader"
--- from game state independently.
---
--- This still requires the same native-format tradeoff as native walker
--- sprites elsewhere (16x16 per frame, 6-frame vertical strip, STAND/WALK
--- layout down/up/left with right as a horizontal mirror -- confirmed
--- against the real SpriteRenderer.STAND/WALK tables) -- there is no
--- scale-to-fit path for this feature at all, native or otherwise, so
--- unlike the wild-spawn case there was no lossless alternative to offer;
--- this was explicitly accepted when scoping this fix.
---
--- Load-order: FOLLOWERS_EX must install its own SpriteRenderer.resolveImage
--- wrap before this mod captures "the existing function" to delegate to,
--- or non-amplified-dex species would lose PokePC pack integration
--- entirely. Guaranteed by declaring FOLLOWERS_EX in this mod's own
--- optional_dependencies (manifest.json) plus deferring to "mods.loaded" --
--- same ordering guarantee already relied on for the Wilds sprite provider
--- above.
-local function installFollowerSpriteHook(mod, spritePackRosterFull)
-  local ours = {}
-  for _, id in ipairs(spritePackRosterFull) do ours[id] = true end
-
-  local walkerImages = {}
-  local function loadWalker(speciesId)
-    local cached = walkerImages[speciesId]
-    if cached ~= nil then
-      if cached == false then return nil end
-      return cached
-    end
-    -- Our own species' walker sheet. This draw path is a native 16x16
-    -- quad slice per frame (below), already correctly tile-sized
-    -- regardless of source species -- the oversize bug lived in the wild-
-    -- spawn whole-image draw (overworld_spawns.lua), not here, so there is
-    -- no sizing reason to borrow a base-game species' art for followers.
-    local path = mod.path .. "/assets/followers/" .. speciesId .. ".png"
-    local ok, img = pcall(love.graphics.newImage, path)
-    if ok and img then
-      img:setFilter("nearest", "nearest")
-      walkerImages[speciesId] = img
-      return img
-    end
-    walkerImages[speciesId] = false
-    return nil
-  end
-
-  mod.events:on("mods.loaded", function()
-    local ok = pcall(function()
-      local followersEx = mod.find("FOLLOWERS_EX")
-      if not followersEx then return end
-
-      local SpriteRenderer = require("src.render.SpriteRenderer")
-      if SpriteRenderer.__galarFollowerWrapped then return end
-      SpriteRenderer.__galarFollowerWrapped = true
-
-      local origResolveImage = SpriteRenderer.resolveImage
-      function SpriteRenderer:resolveImage(...)
-        local id = self.def and self.def.id
-        if id == "SPRITE_POKEPC_MON" or id == "SPRITE_PLAYER_POKEMON"
-            or id == "SPRITE_PIKACHU" then
-          local species = self.def.image
-            and self.def.image:match("follower_([%w_]+)%.png")
-          if species and ours[species] then
-            local img = loadWalker(species)
-            if img then
-              -- Do NOT rewrite self.def.image/frames/walker here: def is the
-              -- SAME shared table other code (ControlEngine's own species
-              -- detection, FOLLOWERS_EX's BillboardUvFix voxel mesh cache)
-              -- pattern-matches against "follower_<SPECIES>.png". A path
-              -- without that literal prefix (assets/followers/URSHIFU.png
-              -- has no "follower_" substring) makes every LATER call that
-              -- re-derives species from self.def.image fail silently and
-              -- fall through to their own Charmander/leader-guess fallback
-              -- -- confirmed by reading monSpeciesShinyFromDef's exact same
-              -- match pattern. Only the resolved image itself needs to
-              -- change; the def table's identity string stays untouched.
-              self.image = img
-              return img
-            end
-          end
-        end
-        return origResolveImage(self, ...)
-      end
-
-      -- resolveImage above turned out to be dead code for the actual
-      -- on-screen bug: ControlEngine.lua's own SpriteRenderer.draw override
-      -- for these same three ids never calls self:resolveImage() at all --
-      -- it resolves straight from a closure-local getFollowerImage(species)
-      -- and blits directly (confirmed by reading ControlEngine.lua's own
-      -- SpriteRenderer:draw, ~line 1104). That local function is not
-      -- reachable from outside its closure, so the only way to answer for
-      -- our species before its Charmander fallback runs is to wrap .draw
-      -- itself a second time and short-circuit before ever calling through.
-      -- Quad/flip/offset math below is a direct copy of ControlEngine's own
-      -- blitPokepcTrueColor + SpriteRenderer:draw (same -4 y offset, same
-      -- STAND/WALK frame lookup, same right-facing/step-flip mirroring) so
-      -- our species draw pixel-identically to how theirs already do.
-      local origDraw = SpriteRenderer.draw
-      -- The engine's own render loop has no pcall around entity:draw(...)
-      -- (confirmed directly, src/world/OverworldController.lua) -- an
-      -- uncaught error here crashes the whole game, not just one frame.
-      -- pcall the risky quad-drawing part and fall back to origDraw on
-      -- any failure instead.
-      local function drawOurs(self, px, py, camX, camY, facing, walkPhase, stepFlip, img)
-        local x = math.floor(px - camX)
-        local y = math.floor(py - camY) - 4
-        local STAND, WALK = SpriteRenderer.STAND, SpriteRenderer.WALK
-        local dirMap = (walkPhase == 1) and WALK or STAND
-        local frameIdx = (dirMap and dirMap[facing or "down"]) or 0
-        local flip = (facing == "right")
-          or (stepFlip and (facing == "up" or facing == "down"))
-        local iw, ih = img:getDimensions()
-        local quad = love.graphics.newQuad(0, frameIdx * 16, 16, 16, iw, ih)
-        local drawX = flip and (x + 16) or x
-        local sx = flip and -1 or 1
-        love.graphics.setColor(1, 1, 1, 1)
-        love.graphics.draw(img, quad, drawX, y, 0, sx, 1)
-      end
-
-      function SpriteRenderer:draw(px, py, camX, camY, facing, walkPhase, stepFlip, topHalf)
-        local id = self.def and self.def.id
-        if not topHalf and (id == "SPRITE_POKEPC_MON" or id == "SPRITE_PLAYER_POKEMON"
-            or id == "SPRITE_PIKACHU") then
-          local species = self.def.image
-            and self.def.image:match("follower_([%w_]+)%.png")
-          if species and ours[species] then
-            local img = loadWalker(species)
-            if img then
-              local ok = pcall(drawOurs, self, px, py, camX, camY, facing, walkPhase, stepFlip, img)
-              if ok then return end
-              love.graphics.setColor(1, 1, 1, 1)
-              mod.log:warn("galar_gmax_dex: follower draw failed for %s", tostring(species))
-            end
-          end
-        end
-        return origDraw(self, px, py, camX, camY, facing, walkPhase, stepFlip, topHalf)
-      end
-    end)
-    if not ok then
-      mod.log:warn("galar_gmax_dex: failed to hook Followers EX sprite resolution")
-    end
-  end)
-end
-
--- =============================================================================
--- Followers EX stock-companion cleanup (map-entry ghost NPC)
--- =============================================================================
--- A real bug in Followers EX itself, not anything of ours -- traced by
--- reading the real engine's src/world/PikachuFollower.lua (the DRAW loop,
--- src/world/OverworldController.lua ~4862, iterates ow.entities only --
--- never ow.npcs) against how ControlEngine.lua and PokePCFollowers_
--- VoxelMerge both use debug.setupvalue to patch its module-local
--- "shouldSpawn" closure.
---
--- First pass at this fix (removed) assumed a half-purged orphan: present
--- in ow.npcs but missing from ow.entities. Re-tracing the upvalue capture
--- shows that is not what happens. ControlEngine captures "the previous
--- shouldSpawn" off PikachuFollower.onMapEntered AT THE POINT IT RUNS --
--- but by then that name already points at PokePCFollowers_VoxelMerge's own
--- wrapper, not the true engine original, so what ControlEngine captures
--- as its "vanilla fallback" is actually PokePCFollowers_VoxelMerge's own
--- loose check ("does any healthy party mon exist" -- almost always true),
--- not the real Pikachu-only one. Its own newShouldSpawn only explicitly
--- suppresses in pokemon/lead_trainer/pack modes, or in follow mode with a
--- pack size > 0; every OTHER mode/count combination falls through to that
--- mis-captured "fallback" and returns true. In those cases nothing ever
--- purges the companion -- it is a legitimate, fully-registered spawn (both
--- ow.npcs AND ow.entities) for the entire map visit, which is exactly why
--- it renders (the draw loop reads ow.entities, which was never touched)
--- and only clears when the NEXT map's onMapEntered calls its own remove()
--- at the top, or the map fully reloads on exit.
---
--- Nothing here can edit Followers EX's own files (only GalarGmaxDex/
--- dynamax/gimmick_menu/dynamic_scaling_final_dynamax are ours to touch).
--- Instead this re-derives the suppression decision ourselves (mirroring
--- newShouldSpawn's own two real branches, but falling back to a genuine
--- live-Pikachu check instead of trusting their mis-captured "previous"
--- function) and, when the companion should not exist, removes any
--- pikachuFollower-flagged (non-trailer -- that flag alone is what the
--- real engine's own findFollower/remove use to identify it, confirmed
--- from src/world/PikachuFollower.lua directly) entry from BOTH arrays.
-local function installFollowerOrphanCleanup(mod)
-  local Game = require("src.core.Game")
-
-  local function shouldSuppressStockCompanion(ex, game)
-    local mode = (type(ex.controlMode) == "function" and ex.controlMode(game)) or "follow"
-    if mode == "pokemon" or mode == "lead_trainer" or mode == "pack" then
-      return true
-    end
-    -- follow (or any other/unexpected mode string): only a genuine live
-    -- Pikachu in the party justifies the vanilla talk-to-Pikachu companion.
-    for _, mon in ipairs((game and game.save and game.save.party) or {}) do
-      if mon and mon.species == "PIKACHU" and (mon.hp or 0) > 0 then
-        return false
-      end
-    end
-    return true
-  end
-
-  local function purgeStockCompanion(ow)
-    for i = #(ow.npcs or {}), 1, -1 do
-      local npc = ow.npcs[i]
-      if npc and npc.pikachuFollower and not npc.pokepcTrailer then
-        table.remove(ow.npcs, i)
-      end
-    end
-    for i = #(ow.entities or {}), 1, -1 do
-      local e = ow.entities[i]
-      if e and e.pikachuFollower and not e.pokepcTrailer then
-        table.remove(ow.entities, i)
-      end
-    end
-  end
-
-  mod.events:on("map.entered", function()
-    local ok = pcall(function()
-      local followersEx = mod.find("FOLLOWERS_EX")
-      local ex = followersEx and followersEx.exports
-      if not ex then return end
-      local ow = mod.world and mod.world:overworld()
-      if not ow then return end
-      if shouldSuppressStockCompanion(ex, Game) then
-        purgeStockCompanion(ow)
-      end
-    end)
-    if not ok then
-      mod.log:warn("galar_gmax_dex: failed to run Followers EX stock-companion cleanup")
     end
   end)
 end
@@ -2125,6 +1885,17 @@ return function(mod)
   local installGen2ModernStats = loadSibling(mod, "stats/gen2_modern_stats.lua")
   installGen2ModernStats(mod)
 
+  -- Gym leader / Elite Four / Champion / Red team replacement -- TEMPORARILY
+  -- DISABLED, explicit user report: "after this update we are getting
+  -- silent crash" immediately following this feature landing. Files left
+  -- in place (overworld/gym_trainer_teams.lua, overworld/
+  -- install_gym_trainer_teams.lua) -- this is the call site alone,
+  -- commented out rather than deleted, so re-enabling once the actual
+  -- crash cause is found is a one-line change, not a rebuild.
+  -- local gymTrainerTeams = loadSibling(mod, "overworld/gym_trainer_teams.lua")
+  -- local installGymTrainerTeams = loadSibling(mod, "overworld/install_gym_trainer_teams.lua")
+  -- installGymTrainerTeams(mod, gymTrainerTeams)
+
   -- EV yield on faint: every mon that gains EXP from a KO gains that
   -- species' national_dex EV yield too -- listens to battle.exp_gained,
   -- same event name/compatible payload in both generations, so one file
@@ -2315,8 +2086,6 @@ return function(mod)
   -- ------- Phase 5: overworld sprite provider (optional: Wilds of Kanto) -------
   installOverworldSpriteProvider(mod, spritePackRosterFull)
   installWildDrawOverride(mod, spritePackRosterFull)
-  installFollowerSpriteHook(mod, spritePackRosterFull)
-  installFollowerOrphanCleanup(mod)
   -- Confirmed crash fix: the Gen 1 version below requires("src.ui
   -- .PartyMenu"), which under a Gen 2 boot resolves to a facade that
   -- reports drawIcon as absent -- see installBigPartyIconsGen2's own
@@ -2340,13 +2109,16 @@ return function(mod)
 
   -- ------- Phase 7 (W1): native overworld wild-spawn engine -------
   -- Full replacement for Wilds of Kanto, per explicit user decision
-  -- (2026-08-07). Once this is active, Wilds of Kanto and Followers EX
-  -- should be disabled in the Mod Manager -- both would otherwise still
-  -- try to spawn/render wild Pokemon on the same maps independently,
-  -- producing duplicate/conflicting visible spawns. installOverworldSpriteProvider
-  -- / installFollowerSpriteHook above are now dead weight if those mods
-  -- are disabled (both are no-ops when their target mod isn't found) --
-  -- left in place for now rather than removed mid-transition.
+  -- (2026-08-07). Once this is active, Wilds of Kanto should be disabled
+  -- in the Mod Manager -- it would otherwise still try to spawn/render
+  -- wild Pokemon on the same maps independently, producing duplicate/
+  -- conflicting visible spawns. installOverworldSpriteProvider above is
+  -- now dead weight if that mod is disabled (a no-op when Wilds isn't
+  -- found) -- left in place for now rather than removed mid-transition.
+  -- Followers EX compatibility (installFollowerSpriteHook/
+  -- installFollowerOrphanCleanup) was removed outright per explicit user
+  -- instruction -- not required, redundant with Phase 8's own native
+  -- follower engine below.
   local installOverworldSpawns = loadSibling(mod, "overworld/overworld_spawns.lua")
   installOverworldSpawns(mod)
 

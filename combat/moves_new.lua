@@ -54,7 +54,7 @@
 --       move's functionCode says exactly what is missing.
 return {
   ACIDSPRAY = { name = "Acid Spray", type = "POISON", category = "special", power = 40, accuracy = 100, pp = 20, priority = 0, highCrit = false, effect = "GMAX_ACIDSPRAY_EFFECT", functionCode = "LowerTargetSpDef2" },
-  ACROBATICS = { name = "Acrobatics", type = "FLYING", category = "physical", power = 55, accuracy = 100, pp = 15, priority = 0, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", functionCode = "DoublePowerIfUserHasNoItem" },
+  ACROBATICS = { name = "Acrobatics", type = "FLYING", category = "physical", power = 55, accuracy = 100, pp = 15, priority = 0, highCrit = false, effect = "GMAX_ACROBATICS_EFFECT", functionCode = "DoublePowerIfUserHasNoItem" },
   AERIALACE = { name = "Aerial Ace", type = "FLYING", category = "physical", power = 60, accuracy = 100, pp = 20, priority = 0, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", functionCode = "None" },
   AFTERYOU = { name = "After You", type = "NORMAL", category = "status", power = 0, accuracy = 100, pp = 15, priority = 0, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", functionCode = "TargetActsNext" },
   ALLYSWITCH = { name = "Ally Switch", type = "PSYCHIC", category = "status", power = 0, accuracy = 100, pp = 15, priority = 2, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", functionCode = "UserSwapsPositionsWithAlly" },
@@ -62,7 +62,7 @@ return {
   APPLEACID = { name = "Apple Acid", type = "GRASS", category = "special", power = 80, accuracy = 100, pp = 10, priority = 0, highCrit = false, effect = "GMAX_APPLEACID_EFFECT", functionCode = "LowerTargetSpDef1" },
   AROMATHERAPY = { name = "Aromatherapy", type = "GRASS", category = "status", power = 0, accuracy = 100, pp = 5, priority = 0, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", functionCode = "CureUserPartyStatus" },
   AROMATICMIST = { name = "Aromatic Mist", type = "FAIRY", category = "status", power = 0, accuracy = 100, pp = 20, priority = 0, highCrit = false, effect = "GMAX_AROMATICMIST_EFFECT", functionCode = "RaiseTargetSpDef1" },
-  ASSURANCE = { name = "Assurance", type = "DARK", category = "physical", power = 60, accuracy = 100, pp = 10, priority = 0, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", functionCode = "DoublePowerIfTargetLostHPThisTurn" },
+  ASSURANCE = { name = "Assurance", type = "DARK", category = "physical", power = 60, accuracy = 100, pp = 10, priority = 0, highCrit = false, effect = "GMAX_ASSURANCE_EFFECT", functionCode = "DoublePowerIfTargetLostHPThisTurn" },
   ASTONISH = { name = "Astonish", type = "GHOST", category = "physical", power = 30, accuracy = 100, pp = 15, priority = 0, highCrit = false, effect = "GALAR_FLINCH_EFFECT_30", functionCode = "FlinchTarget" },
   ATTRACT = { name = "Attract", type = "NORMAL", category = "status", power = 0, accuracy = 100, pp = 15, priority = 0, highCrit = false, effect = "GMAX_ATTRACT_EFFECT", functionCode = "AttractTarget" },
   BELCH = { name = "Belch", type = "POISON", category = "special", power = 120, accuracy = 90, pp = 10, priority = 0, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", functionCode = "FailsIfUserNotConsumedBerry" },
@@ -113,7 +113,7 @@ return {
   DISARMINGVOICE = { name = "Disarming Voice", type = "FAIRY", category = "special", power = 40, accuracy = 100, pp = 15, priority = 0, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", functionCode = "None" },
   DISCHARGE = { name = "Discharge", type = "ELECTRIC", category = "special", power = 80, accuracy = 100, pp = 15, priority = 0, highCrit = false, effect = "GALAR_PARALYZE_EFFECT_30", functionCode = "ParalyzeTarget" },
   DOUBLEHIT = { name = "Double Hit", type = "NORMAL", category = "physical", power = 35, accuracy = 90, pp = 10, priority = 0, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", multiHit = {2,2}, functionCode = "HitTwoTimes" },
-  DOUBLEIRONBASH = { name = "Double Iron Bash", type = "STEEL", category = "physical", power = 60, accuracy = 100, pp = 5, priority = 0, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", multiHit = {2,2}, functionCode = "HitTwoTimesFlinchTarget" },
+  DOUBLEIRONBASH = { name = "Double Iron Bash", type = "STEEL", category = "physical", power = 60, accuracy = 100, pp = 5, priority = 0, highCrit = false, effect = "GALAR_FLINCH_EFFECT_30", multiHit = {2,2}, functionCode = "HitTwoTimesFlinchTarget" },
   DRAGONBREATH = { name = "Dragon Breath", type = "DRAGON", category = "special", power = 60, accuracy = 100, pp = 20, priority = 0, highCrit = false, effect = "GALAR_PARALYZE_EFFECT_30", functionCode = "ParalyzeTarget" },
   DRAGONCLAW = { name = "Dragon Claw", type = "DRAGON", category = "physical", power = 80, accuracy = 100, pp = 15, priority = 0, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", functionCode = "None" },
   DRAGONDANCE = { name = "Dragon Dance", type = "DRAGON", category = "status", power = 0, accuracy = 100, pp = 20, priority = 0, highCrit = false, effect = "GMAX_DRAGONDANCE_EFFECT", functionCode = "RaiseUserAtkSpd1" },
@@ -126,7 +126,7 @@ return {
   DYNAMICPUNCH = { name = "Dynamic Punch", type = "FIGHTING", category = "physical", power = 100, accuracy = 50, pp = 5, priority = 0, highCrit = false, effect = "GALAR_CONFUSE_EFFECT_100", functionCode = "ConfuseTarget" },
   EERIEIMPULSE = { name = "Eerie Impulse", type = "ELECTRIC", category = "status", power = 0, accuracy = 100, pp = 15, priority = 0, highCrit = false, effect = "GMAX_EERIEIMPULSE_EFFECT", functionCode = "LowerTargetSpAtk2" },
   ENCORE = { name = "Encore", type = "NORMAL", category = "status", power = 0, accuracy = 100, pp = 5, priority = 0, highCrit = false, effect = "EFFECT_ENCORE", functionCode = "ForceRepeatLastMove" },
-  ENDEAVOR = { name = "Endeavor", type = "NORMAL", category = "physical", power = 1, accuracy = 100, pp = 5, priority = 0, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", functionCode = "LowerTargetHPToUserHP" },
+  ENDEAVOR = { name = "Endeavor", type = "NORMAL", category = "physical", power = 1, accuracy = 100, pp = 5, priority = 0, highCrit = false, effect = "GMAX_ENDEAVOR_EFFECT", functionCode = "LowerTargetHPToUserHP" },
   ENDURE = { name = "Endure", type = "NORMAL", category = "status", power = 0, accuracy = 100, pp = 10, priority = 4, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", functionCode = "UserEnduresFaintingThisTurn" },
   ENERGYBALL = { name = "Energy Ball", type = "GRASS", category = "special", power = 90, accuracy = 100, pp = 10, priority = 0, highCrit = false, effect = "GMAX_ENERGYBALL_EFFECT", functionCode = "LowerTargetSpDef1" },
   ENTRAINMENT = { name = "Entrainment", type = "NORMAL", category = "status", power = 0, accuracy = 100, pp = 15, priority = 0, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", functionCode = "SetTargetAbilityToUserAbility" },
@@ -144,7 +144,7 @@ return {
   -- way "None" already is.
   FEINT = { name = "Feint", type = "NORMAL", category = "physical", power = 30, accuracy = 100, pp = 10, priority = 2, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", functionCode = "RemoveProtections", bypassesProtect = true },
   FIRELASH = { name = "Fire Lash", type = "FIRE", category = "physical", power = 80, accuracy = 100, pp = 15, priority = 0, highCrit = false, effect = "GMAX_FIRELASH_EFFECT", functionCode = "LowerTargetDefense1" },
-  FLAIL = { name = "Flail", type = "NORMAL", category = "physical", power = 1, accuracy = 100, pp = 15, priority = 0, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", functionCode = "PowerLowerWithUserHP" },
+  FLAIL = { name = "Flail", type = "NORMAL", category = "physical", power = 1, accuracy = 100, pp = 15, priority = 0, highCrit = false, effect = "GMAX_FLAIL_EFFECT", functionCode = "PowerLowerWithUserHP" },
   FLAMECHARGE = { name = "Flame Charge", type = "FIRE", category = "physical", power = 50, accuracy = 100, pp = 20, priority = 0, highCrit = false, effect = "GMAX_FLAMECHARGE_EFFECT", functionCode = "RaiseUserSpeed1" },
   FLAMEWHEEL = { name = "Flame Wheel", type = "FIRE", category = "physical", power = 60, accuracy = 100, pp = 25, priority = 0, highCrit = false, effect = "GALAR_BURN_EFFECT_10", functionCode = "BurnTarget" },
   FLASHCANNON = { name = "Flash Cannon", type = "STEEL", category = "special", power = 80, accuracy = 100, pp = 10, priority = 0, highCrit = false, effect = "GMAX_FLASHCANNON_EFFECT", functionCode = "LowerTargetSpDef1" },
@@ -159,8 +159,8 @@ return {
   HEADSMASH = { name = "Head Smash", type = "ROCK", category = "physical", power = 150, accuracy = 80, pp = 5, priority = 0, highCrit = false, effect = "GALAR_RECOIL_EFFECT_2", functionCode = "RecoilHalfOfDamageDealt" },
   HEALINGWISH = { name = "Healing Wish", type = "PSYCHIC", category = "status", power = 0, accuracy = 100, pp = 10, priority = 0, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", functionCode = "UserFaintsHealAndCureReplacement" },
   HEALPULSE = { name = "Heal Pulse", type = "PSYCHIC", category = "status", power = 0, accuracy = 100, pp = 10, priority = 0, highCrit = false, effect = "GALAR_HEALPULSE_EFFECT", functionCode = "HealTargetHalfOfTotalHP" },
-  HEATCRASH = { name = "Heat Crash", type = "FIRE", category = "physical", power = 1, accuracy = 100, pp = 10, priority = 0, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", functionCode = "PowerHigherWithUserHeavierThanTarget" },
-  HEAVYSLAM = { name = "Heavy Slam", type = "STEEL", category = "physical", power = 1, accuracy = 100, pp = 10, priority = 0, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", functionCode = "PowerHigherWithUserHeavierThanTarget" },
+  HEATCRASH = { name = "Heat Crash", type = "FIRE", category = "physical", power = 1, accuracy = 100, pp = 10, priority = 0, highCrit = false, effect = "GMAX_HEATCRASH_EFFECT", functionCode = "PowerHigherWithUserHeavierThanTarget" },
+  HEAVYSLAM = { name = "Heavy Slam", type = "STEEL", category = "physical", power = 1, accuracy = 100, pp = 10, priority = 0, highCrit = false, effect = "GMAX_HEAVYSLAM_EFFECT", functionCode = "PowerHigherWithUserHeavierThanTarget" },
   HIGHHORSEPOWER = { name = "High Horsepower", type = "GROUND", category = "physical", power = 95, accuracy = 95, pp = 10, priority = 0, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", functionCode = "None" },
   HONECLAWS = { name = "Hone Claws", type = "DARK", category = "status", power = 0, accuracy = 100, pp = 15, priority = 0, highCrit = false, effect = "GMAX_HONECLAWS_EFFECT", functionCode = "RaiseUserAtkAcc1" },
   HYPERVOICE = { name = "Hyper Voice", type = "NORMAL", category = "special", power = 90, accuracy = 100, pp = 10, priority = 0, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", functionCode = "None" },
@@ -196,7 +196,13 @@ return {
   PLUCK = { name = "Pluck", type = "FLYING", category = "physical", power = 60, accuracy = 100, pp = 20, priority = 0, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", functionCode = "UserConsumeTargetBerry" },
   POISONJAB = { name = "Poison Jab", type = "POISON", category = "physical", power = 80, accuracy = 100, pp = 20, priority = 0, highCrit = false, effect = "GALAR_POISON_EFFECT_30", functionCode = "PoisonTarget" },
   POISONTAIL = { name = "Poison Tail", type = "POISON", category = "physical", power = 50, accuracy = 100, pp = 25, priority = 0, highCrit = true, effect = "GALAR_POISON_EFFECT_10", functionCode = "PoisonTarget" },
-  POWERTRIP = { name = "Power Trip", type = "DARK", category = "physical", power = 1, accuracy = 100, pp = 10, priority = 0, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", functionCode = "PowerHigherWithUserPositiveStatStages" },
+  -- Real Showdown counts all 7 raiseable stats (atk/def/spa/spd/spe/
+  -- accuracy/evasion); this mod's own stage store only tracks atk/def/
+  -- spa/spd (combat/modern_combat.lua's own stageState header: speed/
+  -- accuracy/evasion stay native, out of scope). Approximated on those
+  -- 4 only -- flagged, not silently narrowed -- see registerPowerOverride
+  -- ("POWERTRIP", ...) for the exact reasoning.
+  POWERTRIP = { name = "Power Trip", type = "DARK", category = "physical", power = 1, accuracy = 100, pp = 10, priority = 0, highCrit = false, effect = "GMAX_POWERTRIP_EFFECT", functionCode = "PowerHigherWithUserPositiveStatStages" },
   POWERUPPUNCH = { name = "Power-Up Punch", type = "FIGHTING", category = "physical", power = 40, accuracy = 100, pp = 20, priority = 0, highCrit = false, effect = "GMAX_POWERUPPUNCH_EFFECT", functionCode = "RaiseUserAttack1" },
   PROTECT = { name = "Protect", type = "NORMAL", category = "status", power = 0, accuracy = 100, pp = 10, priority = 4, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", functionCode = "ProtectUser" },
   PSYCHICTERRAIN = { name = "Psychic Terrain", type = "PSYCHIC", category = "status", power = 0, accuracy = 100, pp = 10, priority = 0, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", functionCode = "StartPsychicTerrain" },
@@ -211,6 +217,13 @@ return {
   ROCKSMASH = { name = "Rock Smash", type = "FIGHTING", category = "physical", power = 40, accuracy = 100, pp = 15, priority = 0, highCrit = false, effect = "GMAX_ROCKSMASH_EFFECT", functionCode = "LowerTargetDefense1" },
   ROCKTOMB = { name = "Rock Tomb", type = "ROCK", category = "physical", power = 60, accuracy = 95, pp = 15, priority = 0, highCrit = false, effect = "GMAX_ROCKTOMB_EFFECT", functionCode = "LowerTargetSpeed1" },
   ROLLOUT = { name = "Rollout", type = "ROCK", category = "physical", power = 30, accuracy = 90, pp = 20, priority = 0, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", functionCode = "MultiTurnAttackPowersUpEachTurn" },
+  -- Real Showdown effect (power doubles when used the same turn right
+  -- after an ally already used Round) is a doubles-only mechanic -- this
+  -- engine is confirmed singles-only (no ally battler slot exists at
+  -- all), so the bonus condition can structurally never fire. Deals its
+  -- ordinary 60 power unconditionally; isMoveDataComplete (main.lua)
+  -- carries an explicit exemption for this functionCode with the same
+  -- reasoning, so this isn't silently miscounted as still-stubbed.
   ROUND = { name = "Round", type = "NORMAL", category = "special", power = 60, accuracy = 100, pp = 15, priority = 0, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", functionCode = "UsedAfterAllyRoundWithDoublePower" },
   SANDSTORM = { name = "Sandstorm", type = "ROCK", category = "status", power = 0, accuracy = 100, pp = 10, priority = 0, highCrit = false, effect = "GALAR_SANDSTORM_EFFECT", functionCode = "StartSandstormWeather" },
   SANDTOMB = { name = "Sand Tomb", type = "GROUND", category = "physical", power = 35, accuracy = 85, pp = 15, priority = 0, highCrit = false, effect = "GALAR_TRAP_EFFECT", functionCode = "BindTarget" },
@@ -259,10 +272,17 @@ return {
   TEARFULLOOK = { name = "Tearful Look", type = "NORMAL", category = "status", power = 0, accuracy = 100, pp = 20, priority = 0, highCrit = false, effect = "GMAX_TEARFULLOOK_EFFECT", functionCode = "LowerTargetAtkSpAtk1" },
   TORMENT = { name = "Torment", type = "DARK", category = "status", power = 0, accuracy = 100, pp = 15, priority = 0, highCrit = false, effect = "GMAX_TORMENT_EFFECT", functionCode = "DisableTargetUsingSameMoveConsecutively" },
   TOXICSPIKES = { name = "Toxic Spikes", type = "POISON", category = "status", power = 0, accuracy = 100, pp = 20, priority = 0, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", functionCode = "AddToxicSpikesToFoeSide" },
-  TWISTER = { name = "Twister", type = "DRAGON", category = "special", power = 40, accuracy = 100, pp = 20, priority = 0, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", functionCode = "FlinchTargetDoublePowerIfTargetInSky" },
+  -- The flinch half rides the existing GALAR_FLINCH_EFFECT_<chance>
+  -- mechanism (installMovepoolEffects, main.lua) unchanged -- real
+  -- Showdown flinch chance is 20%. The double-power-if-target-is-mid-
+  -- Fly/Bounce half is a separate registerDamageModifier entry keyed off
+  -- this move's id directly (combat/modern_combat.lua), reusing the
+  -- real `invulnerable` flag Bounce/Fly's own two-turn-move handling
+  -- already sets -- not a new mechanic invented for this move.
+  TWISTER = { name = "Twister", type = "DRAGON", category = "special", power = 40, accuracy = 100, pp = 20, priority = 0, highCrit = false, effect = "GALAR_FLINCH_EFFECT_20", functionCode = "FlinchTargetDoublePowerIfTargetInSky" },
   UPROAR = { name = "Uproar", type = "NORMAL", category = "special", power = 90, accuracy = 100, pp = 10, priority = 0, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", functionCode = "MultiTurnAttackPreventSleeping" },
   UTURN = { name = "U-turn", type = "BUG", category = "physical", power = 70, accuracy = 100, pp = 20, priority = 0, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", functionCode = "SwitchOutUserDamagingMove" },
-  VENOSHOCK = { name = "Venoshock", type = "POISON", category = "special", power = 65, accuracy = 100, pp = 10, priority = 0, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", functionCode = "DoublePowerIfTargetPoisoned" },
+  VENOSHOCK = { name = "Venoshock", type = "POISON", category = "special", power = 65, accuracy = 100, pp = 10, priority = 0, highCrit = false, effect = "GMAX_VENOSHOCK_EFFECT", functionCode = "DoublePowerIfTargetPoisoned" },
   WATERPULSE = { name = "Water Pulse", type = "WATER", category = "special", power = 60, accuracy = 100, pp = 20, priority = 0, highCrit = false, effect = "GALAR_CONFUSE_EFFECT_20", functionCode = "ConfuseTarget" },
   WICKEDBLOW = { name = "Wicked Blow", type = "DARK", category = "physical", power = 75, accuracy = 100, pp = 5, priority = 0, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", functionCode = "AlwaysCriticalHit" },
   WOODHAMMER = { name = "Wood Hammer", type = "GRASS", category = "physical", power = 120, accuracy = 100, pp = 15, priority = 0, highCrit = false, effect = "GALAR_RECOIL_EFFECT_3", functionCode = "RecoilThirdOfDamageDealt" },

@@ -14,9 +14,7 @@
 -- 16x96 native walker texture over a bigger quad. Two things have to
 -- change together, and only for our own species' sprite ids, so nothing
 -- else in the game is affected:
---   1. SpriteRenderer.resolveImage (already wrapped once, by
---      installFollowerSpriteHook in main.lua, but only for Followers EX's
---      own sprite ids) needs a SEPARATE wrap here for our
+--   1. SpriteRenderer.resolveImage needs a wrap here for our own
 --      SPRITE_GGD_WILD_*/SPRITE_GGD_FOLLOWER_* ids, redirecting to the
 --      lossless assets/overworld/<species>.png crop. Safe to do
 --      unconditionally (not just for the voxel path): the classic 2D
