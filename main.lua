@@ -112,50 +112,137 @@ local SPECIAL_TEMPLATE = {
 -- moves_new.lua's GALAR_FLINCH_EFFECT_<chance> / GALAR_CONFUSE_EFFECT_<chance>
 -- ids (derived from the data, not hardcoded, so a later phase adding more
 -- moves at a new chance tier needs no change here) plus the one
--- unconditional GALAR_TRAP_EFFECT. All three read/write only confirmed
--- real battler fields (flinched, confusedTurns, trappingTurns/boundTurns),
--- all seen in Dynamax's own clearDynamaxVolatiles (main.lua of the
--- `dynamax` mod). ctx.target (not ctx.defender) and ctx.rng(min, max) are
--- both confirmed against dynamax's MOD_MAXGUARD_EFFECT and its own test
--- suite's documented ctx.defender -> ctx.target fix.
+-- unconditional GALAR_TRAP_EFFECT.
 --
--- Duration values (confusedTurns, trappingTurns) are reasonable
+-- BUGFIX (this session, reported: "flinched pokemon can't act ever
+-- again"): the original version of Flinch/Confuse registered
+-- kind="secondary" with a single-argument `run = function(ctx)` -- no
+-- normalize(a,b,c) bridge, the same gotcha modern_hazards.lua's own
+-- header already documents for Rapid Spin: Gen 2's dispatch calls ANY
+-- move_effects record with a `.run` field via `handler(self, attacker,
+-- defender, def, moveId, sureHit)` -- SIX positional args, not one ctx
+-- table -- BEFORE its own damage path, and returns immediately
+-- (gen2/Battle.lua:1533-1538). A single-param `function(ctx)` silently
+-- captures `self` (the raw Battle instance, which has no `.target` field
+-- -- confirmed, zero `self.target =` assignments anywhere in gen2/
+-- Battle.lua) as `ctx`, so `ctx.target` was always nil on Gen 2: the
+-- roll never ran, the flag never got set, AND -- because the dispatch
+-- returns unconditionally right after calling the handler -- the move
+-- dealt NO DAMAGE and skipped whatever turn-resolution bookkeeping
+-- normally follows a landed hit. That is almost certainly the actual
+-- shape of the reported bug (a Gen 2 target that got hit by a flinch-
+-- chance move never receiving its "turn completed" step reads as
+-- "can't act ever again," not literally as an uncleared flag), on top
+-- of silently killing damage for every flinch/confuse-chance move on
+-- Gen 2.
+--
+-- Fixed the same way every other on-hit side effect in this project
+-- already is (Rapid Spin, Knock Off, Covet, ... -- combat/
+-- modern_hazards.lua, combat/modern_items.lua): kind="full" with NO run
+-- field (so damage always proceeds normally on both engines), and the
+-- actual roll+flag-set moves to a separate battle.damage_dealt listener,
+-- confirmed identical payload shape on both engines and fired only
+-- AFTER a landed, non-immune hit.
+--
+-- Storage location differs by generation -- confirmed directly against
+-- this mod's OWN existing gigantamax/gimmick_dynamax.lua
+-- clearDynamaxVolatiles, which already draws this exact distinction:
+-- Gen 1 keeps flinched/confusedTurns directly on the battler
+-- (who.flinched, who.confusedTurns); Gen 2 keeps the equivalents inside
+-- battle:volatile(mon) (vol.flinched, vol.confuseCount -- note the
+-- different field NAME too, not just location, matching gen2/Battle
+-- .lua's own read site at line ~912/921). Writing target.flinched = true
+-- unconditionally (the original bug) never touched the place Gen 2
+-- actually reads.
+--
+-- GALAR_TRAP_EFFECT is NOT touched here -- same underlying dispatch bug,
+-- but Gen 2 already has a real, separate, WORKING native trap mechanic
+-- (mon.wrapCount / EFFECT_TRAP_TARGET, gen2/Battle.lua:1769-1785,
+-- confirmed this session) that this effect was never wired to and would
+-- need a deliberate design call (route through wrapCount vs. keep its
+-- own state), not a same-shape patch. Left as a separately flagged,
+-- known-broken-on-Gen-2 issue.
+--
+-- Duration values (confusedTurns, 2-5 turns) are reasonable
 -- approximations, not confirmed exact -- this engine's own real formula
--- for either was not found in any reference source.
+-- was not found in any reference source; unchanged by this fix.
 local function installMovepoolEffects(mod, movesData)
-  local flinchChances, confuseChances = {}, {}
-  for _, def in pairs(movesData) do
+  local flinchChanceByMove, confuseChanceByMove = {}, {}
+  for id, def in pairs(movesData) do
     local chance = def.effect:match("^GALAR_FLINCH_EFFECT_(%d+)$")
-    if chance then flinchChances[tonumber(chance)] = true end
+    if chance then flinchChanceByMove[id] = tonumber(chance) end
     chance = def.effect:match("^GALAR_CONFUSE_EFFECT_(%d+)$")
-    if chance then confuseChances[tonumber(chance)] = true end
+    if chance then confuseChanceByMove[id] = tonumber(chance) end
   end
 
-  for chance in pairs(flinchChances) do
-    mod.content.move_effects:register("GALAR_FLINCH_EFFECT_" .. chance, {
-      kind = "secondary",
-      run = function(ctx)
-        if ctx.target and ctx.rng(1, 100) <= chance then
-          ctx.target.flinched = true
-        end
-        return {}
-      end,
-    })
+  local registeredEffect = {}
+  local function registerFullStub(id)
+    if registeredEffect[id] then return end
+    mod.content.move_effects:register(id, { kind = "full" })
+    registeredEffect[id] = true
+  end
+  for _, chance in pairs(flinchChanceByMove) do
+    registerFullStub("GALAR_FLINCH_EFFECT_" .. chance)
+  end
+  for _, chance in pairs(confuseChanceByMove) do
+    registerFullStub("GALAR_CONFUSE_EFFECT_" .. chance)
   end
 
-  for chance in pairs(confuseChances) do
-    mod.content.move_effects:register("GALAR_CONFUSE_EFFECT_" .. chance, {
-      kind = "secondary",
-      run = function(ctx)
-        if ctx.target and ctx.rng(1, 100) <= chance then
-          -- Approximated duration (2-5 turns); this engine's real
-          -- confusion-length formula wasn't found anywhere confirmed.
-          ctx.target.confusedTurns = ctx.rng(2, 5)
+  mod.events:on("battle.damage_dealt", function(ev)
+    local battle = ev and ev.battle
+    local moveId = ev and ((ev.move and ev.move.id) or ev.moveId)
+    local target = ev and ev.target
+    if not (battle and moveId and target) then return end
+    local flinchChance = flinchChanceByMove[moveId]
+    local confuseChance = confuseChanceByMove[moveId]
+    if not (flinchChance or confuseChance) then return end
+    local ok, err = pcall(function()
+      -- isGen2Battle is looked up lazily (not hoisted to a local at the
+      -- top of this file) because installMovepoolEffects runs during
+      -- Phase 2, before combat/modern_combat.lua (Phase 6+) has loaded
+      -- and populated mod.exports -- this closure only runs later,
+      -- during a real battle, by which point every mod has finished
+      -- loading.
+      local gen2 = mod.exports.isGen2Battle and mod.exports.isGen2Battle(battle)
+      -- RNG convention genuinely differs by engine, confirmed directly:
+      -- Gen 1's battle.rng(a, b) (BattleState.lua:596, `love.math.random
+      -- (a, b)`) is inclusive-both-ends. Gen 2 has NO .rng field at all
+      -- (confirmed, zero matches in gen2/Battle.lua) -- its real
+      -- primitive is battle.random(n), a single-arg roll returning
+      -- 0..n-1 (gen2/Battle.lua:220 `self.random = opts.random or
+      -- function(n) return rand(nil, n) end`), and every native Gen 2
+      -- percent-chance check uses exactly `rand(self.random, 100) <
+      -- chance` (e.g. gen2/Battle.lua:1815/1821/1850) -- battle.random
+      -- (100) < chance here mirrors that same, real, established idiom.
+      local function percentRoll(chance)
+        if gen2 then return battle.random(100) < chance end
+        return battle.rng(1, 100) <= chance
+      end
+      local function rangeRoll(lo, hi)
+        if gen2 then return lo + battle.random(hi - lo + 1) end
+        return battle.rng(lo, hi)
+      end
+      if flinchChance and percentRoll(flinchChance) then
+        if gen2 then
+          battle:volatile(target).flinched = true
+        else
+          target.flinched = true
         end
-        return {}
-      end,
-    })
-  end
+      end
+      if confuseChance and percentRoll(confuseChance) then
+        if gen2 then
+          local vol = battle:volatile(target)
+          if not vol.confuseCount then vol.confuseCount = rangeRoll(2, 5) end
+        elseif not target.confusedTurns then
+          target.confusedTurns = rangeRoll(2, 5)
+        end
+      end
+    end)
+    if not ok then
+      mod.log:warn("galar_gmax_dex: installMovepoolEffects: flinch/confuse failed: %s",
+        tostring(err))
+    end
+  end)
 
   mod.content.move_effects:register("GALAR_TRAP_EFFECT", {
     kind = "secondary",
