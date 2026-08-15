@@ -15,3 +15,4 @@ Future extensions:
 -Overworld Alphamons, Hordes, Double Battle, gen5 phenomena encounter type, Dynamax Den, Tera Dens, Mega Dens, (Dynamax/Tera/Mega) Adventures.
 -Tutor, TM extensions.
 -EV/IV modification items.
+-allow manual set of EVs over total limit, support 252 EV all stat.
