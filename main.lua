@@ -2215,6 +2215,20 @@ return function(mod)
   local installModernWeather = loadSibling(mod, "combat/modern_weather.lua")
   installModernWeather(mod)
 
+  -- Part B Phase 5, first batch: entry hazards (Stealth Rock, Toxic
+  -- Spikes, Rapid Spin). Same load-order requirement as modern_weather.lua
+  -- above -- consumes modern_combat.lua's normalize/displayNameFor/
+  -- curTypesOf/isGen2Battle exports -- so stays after it; order relative
+  -- to modern_weather.lua itself doesn't matter (independent field state).
+  local installModernHazards = loadSibling(mod, "combat/modern_hazards.lua")
+  installModernHazards(mod)
+
+  -- Part B Phase 5, second batch: item-interaction moves (Fling, Knock
+  -- Off, Covet, Incinerate, Bug Bite, Pluck, Recycle, Belch). Same
+  -- modern_combat.lua load-order requirement as modern_hazards.lua above.
+  local installModernItems = loadSibling(mod, "combat/modern_items.lua")
+  installModernItems(mod)
+
   -- Shared theme/panel primitives (colors, panel(), printText(), cursor,
   -- HP bar) -- one module so battle and every menu screen below read as
   -- one coherent UI instead of per-screen one-off looks.
