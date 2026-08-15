@@ -62,8 +62,7 @@ interactions specifically), not yet begun as its own feature.
 ✅ **Good enough initial state** (explicit call — this is the lowest-
 priority scope item, and it's functional: native wild-spawn engine
 (Phase 7/W1), full lossless art with a real 4-frame walk cycle per
-direction, layered fallback chain, encounter tables). Known remaining
-gaps (Route 29 Gen 2 not spawning) are tracked separately, not blocking.
+direction, layered fallback chain, encounter tables).
 
 ### 9. Followers
 ✅ **Good enough initial state** (explicit call — also lowest priority).
