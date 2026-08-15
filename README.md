@@ -8,6 +8,8 @@ Scope:
 -All 934 moves up dated to generation 9
 -Dynamax (Dynamax level, Gigantamax factor), Mega-evos, Z-moves, Tera type.
 -Held Item expansion + combat effects
+-Overworld encounters
+-Followers
 
 Future extensions:
 -Overworld Alphamons, Hordes, Double Battle, gen5 phenomena encounter type, Dynamax Den, Tera Dens, Mega Dens, (Dynamax/Tera/Mega) Adventures.
