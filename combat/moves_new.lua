@@ -209,7 +209,7 @@ return {
   PSYCHOCUT = { name = "Psycho Cut", type = "PSYCHIC", category = "physical", power = 70, accuracy = 100, pp = 20, priority = 0, highCrit = true, effect = "NO_ADDITIONAL_EFFECT", functionCode = "None" },
   PYROBALL = { name = "Pyro Ball", type = "FIRE", category = "physical", power = 120, accuracy = 90, pp = 5, priority = 0, highCrit = false, effect = "GALAR_BURN_EFFECT_10", functionCode = "BurnTarget" },
   RAINDANCE = { name = "Rain Dance", type = "WATER", category = "status", power = 0, accuracy = 100, pp = 5, priority = 0, highCrit = false, effect = "GALAR_RAINDANCE_EFFECT", functionCode = "StartRainWeather" },
-  RAPIDSPIN = { name = "Rapid Spin", type = "NORMAL", category = "physical", power = 50, accuracy = 100, pp = 40, priority = 0, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", functionCode = "RemoveUserBindingAndEntryHazards" },
+  RAPIDSPIN = { name = "Rapid Spin", type = "NORMAL", category = "physical", power = 50, accuracy = 100, pp = 40, priority = 0, highCrit = false, effect = "GALAR_RAPIDSPIN_EFFECT", functionCode = "RemoveUserBindingAndEntryHazards" },
   RAZORSHELL = { name = "Razor Shell", type = "WATER", category = "physical", power = 75, accuracy = 95, pp = 10, priority = 0, highCrit = false, effect = "GMAX_RAZORSHELL_EFFECT", functionCode = "LowerTargetDefense1" },
   RECYCLE = { name = "Recycle", type = "NORMAL", category = "status", power = 0, accuracy = 100, pp = 10, priority = 0, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", functionCode = "RestoreUserConsumedItem" },
   ROCKBLAST = { name = "Rock Blast", type = "ROCK", category = "physical", power = 25, accuracy = 90, pp = 10, priority = 0, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", multiHit = {2,2,2,3,3,3,4,5}, functionCode = "HitTwoToFiveTimes" },
@@ -249,7 +249,7 @@ return {
   SOLARBEAM = { name = "Solar Beam", type = "GRASS", category = "special", power = 120, accuracy = 100, pp = 10, priority = 0, highCrit = false, effect = "GALAR_SOLARBEAM_EFFECT", functionCode = "TwoTurnAttackSkipsChargeInSun" },
   SPARK = { name = "Spark", type = "ELECTRIC", category = "physical", power = 65, accuracy = 100, pp = 20, priority = 0, highCrit = false, effect = "GALAR_PARALYZE_EFFECT_30", functionCode = "ParalyzeTarget" },
   SPIRITBREAK = { name = "Spirit Break", type = "FAIRY", category = "physical", power = 75, accuracy = 100, pp = 15, priority = 0, highCrit = false, effect = "GMAX_SPIRITBREAK_EFFECT", functionCode = "LowerTargetSpAtk1" },
-  STEALTHROCK = { name = "Stealth Rock", type = "ROCK", category = "status", power = 0, accuracy = 100, pp = 20, priority = 0, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", functionCode = "AddStealthRocksToFoeSide" },
+  STEALTHROCK = { name = "Stealth Rock", type = "ROCK", category = "status", power = 0, accuracy = 100, pp = 20, priority = 0, highCrit = false, effect = "GALAR_STEALTHROCK_EFFECT", functionCode = "AddStealthRocksToFoeSide" },
   STEELWING = { name = "Steel Wing", type = "STEEL", category = "physical", power = 70, accuracy = 90, pp = 25, priority = 0, highCrit = false, effect = "GMAX_STEELWING_EFFECT", functionCode = "RaiseUserDefense1" },
   STOCKPILE = { name = "Stockpile", type = "NORMAL", category = "status", power = 0, accuracy = 100, pp = 20, priority = 0, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", functionCode = "UserAddStockpileRaiseDefSpDef1" },
   STONEEDGE = { name = "Stone Edge", type = "ROCK", category = "physical", power = 100, accuracy = 80, pp = 5, priority = 0, highCrit = true, effect = "NO_ADDITIONAL_EFFECT", functionCode = "None" },
@@ -271,7 +271,7 @@ return {
   TAUNT = { name = "Taunt", type = "DARK", category = "status", power = 0, accuracy = 100, pp = 20, priority = 0, highCrit = false, effect = "GMAX_TAUNT_EFFECT", functionCode = "DisableTargetStatusMoves" },
   TEARFULLOOK = { name = "Tearful Look", type = "NORMAL", category = "status", power = 0, accuracy = 100, pp = 20, priority = 0, highCrit = false, effect = "GMAX_TEARFULLOOK_EFFECT", functionCode = "LowerTargetAtkSpAtk1" },
   TORMENT = { name = "Torment", type = "DARK", category = "status", power = 0, accuracy = 100, pp = 15, priority = 0, highCrit = false, effect = "GMAX_TORMENT_EFFECT", functionCode = "DisableTargetUsingSameMoveConsecutively" },
-  TOXICSPIKES = { name = "Toxic Spikes", type = "POISON", category = "status", power = 0, accuracy = 100, pp = 20, priority = 0, highCrit = false, effect = "NO_ADDITIONAL_EFFECT", functionCode = "AddToxicSpikesToFoeSide" },
+  TOXICSPIKES = { name = "Toxic Spikes", type = "POISON", category = "status", power = 0, accuracy = 100, pp = 20, priority = 0, highCrit = false, effect = "GALAR_TOXICSPIKES_EFFECT", functionCode = "AddToxicSpikesToFoeSide" },
   -- The flinch half rides the existing GALAR_FLINCH_EFFECT_<chance>
   -- mechanism (installMovepoolEffects, main.lua) unchanged -- real
   -- Showdown flinch chance is 20%. The double-power-if-target-is-mid-
