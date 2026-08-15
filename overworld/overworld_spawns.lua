@@ -86,70 +86,64 @@ return function(mod)
   end
 
   -- ------- Phase 1: sprite registration for the full available roster ---
-  -- Registers a native 16x96 walker sheet (src/render/SpriteRenderer.lua's
-  -- hard-locked per-frame format, confirmed no way around it for any
-  -- animated in-world sprite) for every species we have both art for
-  -- (assets/wild_walkers/<ID>.png, generated from Overworld_Sprites/
-  -- Followers -- covers ~1400 species, not just our own 51) AND that is
-  -- an actually-registered species at this point in load order (record
-  -- registries fold live via :get(), so this correctly sees every
-  -- species registered earlier in this same mod's init, plus every
-  -- vanilla/other-mod species registered before us).
+  -- Registers a native 16x96 walker sheet record (src/render/
+  -- SpriteRenderer.lua's hard-locked per-frame format) for every
+  -- registered species, agnostic the same way installFollowerSpriteHook's
+  -- battle-sprite loop was: iterate mod.content.pokemon:each() directly,
+  -- no per-species art file needed at all.
   --
-  -- USED TO enumerate assets/wild_walkers/ at runtime via
-  -- love.filesystem.getDirectoryItems, pcall-wrapped. That stopped being
-  -- safe: the engine's "grandmas-kitchen" sandbox release (dev/public
-  -- 2026-08-14) makes love.filesystem throw on ACCESS -- not just on the
-  -- call -- confirmed by reading that branch's actual src/mods/Sandbox.lua
-  -- directly (loveFacade's __index errors the moment `.filesystem` is
-  -- read). That access happens while evaluating pcall's own argument list
-  -- (`pcall(love.filesystem.getDirectoryItems, dirPath)`), BEFORE pcall's
-  -- protection exists yet -- so this was never going to silently no-op
-  -- under the sandbox, it would have thrown uncaught out of this mod's
-  -- own init. No replacement directory-listing API exists in that branch
-  -- either (checked the Loader.lua/Manifest.lua/AssetTransform.lua diff
-  -- directly -- mod.assets only gained path-sandboxed :path/:image, mod:read
-  -- is for one known file, neither enumerates a directory) -- so this is a
-  -- static snapshot (wild_walker_files.lua, generated from this exact
-  -- folder's real contents, not hand-written) instead of a live scan.
-  -- Re-run the generator (see that file's own header) if assets/
-  -- wild_walkers/ ever gains or loses files.
-  local WALKERS_REL = "assets/wild_walkers"
+  -- assets/wild_walkers/ used to be ~1400 individual per-species 16x96
+  -- sheets (generated from Overworld_Sprites/Followers). Removed outright
+  -- this session (explicit user instruction, "a bad asset that still
+  -- lingers") and briefly regenerated as per-species placeholders when a
+  -- live crash (Route 29 wild spawns AND the party follower, both hitting
+  -- this exact registry) proved the files still needed to exist -- but
+  -- root-causing that crash properly (src/render/SpriteRenderer.lua:
+  -- 135-153's SpriteRenderer.new) showed WHY, and it has nothing to do
+  -- with per-species art:
+  --   self.image = getImage(spriteDef.image)   -- eager, unconditional,
+  --   local iw, ih = self.image:getDimensions()  -- AT ENTITY CONSTRUCTION
+  -- getImage/Assets.image have no pcall anywhere in that chain -- a
+  -- missing file throws a hard, uncaught error the moment an NPC is
+  -- CONSTRUCTED against this sprite id, well before drawLossless/
+  -- applyLosslessDraw ever get a chance to intercept anything (that
+  -- override replaces :draw(), not construction). But self.frameWidth/
+  -- frameHeight -- what movement/collision actually reads -- come from
+  -- spriteDef.frameWidth/frameHeight (registration fields, defaulting to
+  -- a constant), NEVER from the loaded image's own iw/ih; those two are
+  -- used only to satisfy love.graphics.newQuad's own API (which needs a
+  -- source-texture-size argument), a pure rendering-math technicality.
+  -- Since drawLossless/applyLosslessDraw already replace this sprite's
+  -- draw() entirely, the underlying image's actual pixel content was
+  -- NEVER visible to a player in the first place -- so every species
+  -- sharing ONE always-present placeholder file satisfies
+  -- SpriteRenderer.new's hard "must be a real, loadable image" engine
+  -- requirement exactly as well as 1400 unique ones did, at a fraction of
+  -- the size and with nothing left to go stale.
+  local WALKER_PLACEHOLDER = mod.path .. "/assets/wild_walkers/placeholder.png"
   local spriteIdFor = {}
-
   do
-    local body, readErr = mod:read("overworld/wild_walker_files.lua")
-    local chunk = body and loadstring(body, "@" .. mod.path .. "/overworld/wild_walker_files.lua")
-    local ok, files = pcall(function() return chunk and chunk() end)
-    if ok and type(files) == "table" then
-      local registered = 0
-      for _, filename in ipairs(files) do
-        local id = filename:match("^(.+)%.png$")
-        if id and mod.content.pokemon:get(id) then
-          local spriteId = "SPRITE_GGD_WILD_" .. id
-          local okReg = pcall(function()
-            mod.content.sprites:register(spriteId, {
-              id = spriteId, -- R.sprites' id field is optional/not
-              -- auto-populated from the registry key -- voxel_billboards
-              -- .lua's def.id lookup needs this set explicitly, confirmed
-              -- by reading Schemas.lua's R.sprites fields directly.
-              image = mod.path .. "/" .. WALKERS_REL .. "/" .. filename,
-              frames = 6,
-              walker = true,
-              trueColor = true,
-            })
-          end)
-          if okReg then
-            spriteIdFor[id] = spriteId
-            registered = registered + 1
-          end
-        end
+    local registered = 0
+    for id in mod.content.pokemon:each() do
+      local spriteId = "SPRITE_GGD_WILD_" .. id
+      local okReg = pcall(function()
+        mod.content.sprites:register(spriteId, {
+          id = spriteId, -- R.sprites' id field is optional/not
+          -- auto-populated from the registry key -- voxel_billboards.lua's
+          -- def.id lookup needs this set explicitly, confirmed by reading
+          -- Schemas.lua's R.sprites fields directly.
+          image = WALKER_PLACEHOLDER,
+          frames = 6,
+          walker = true,
+          trueColor = true,
+        })
+      end)
+      if okReg then
+        spriteIdFor[id] = spriteId
+        registered = registered + 1
       end
-      mod.log:info("galar_gmax_dex: registered %d wild overworld sprites (Phase 7 W1)", registered)
-    else
-      mod.log:warn("galar_gmax_dex: could not load wild_walker_files.lua for wild sprite registration: %s",
-        tostring(readErr or files))
     end
+    mod.log:info("galar_gmax_dex: registered %d wild overworld sprites (Phase 7 W1)", registered)
   end
 
   -- Shared with overworld_followers.lua (F1): both draw the same native
@@ -430,7 +424,22 @@ return function(mod)
           mod.log:warn("galar_gmax_dex: gen2 lossless draw failed for %s: %s",
             tostring(self.ggdSpecies), tostring(drew))
         end
-        return nativeNpcDraw(self, ox, oy, scale)
+        -- This entity's own registered sprite id points at the single
+        -- shared assets/wild_walkers/placeholder.png (see overworld_
+        -- spawns.lua's own Phase 1 header for why one shared file, not a
+        -- per-species asset, is correct here) -- always present, so this
+        -- native fallback path is safe again. Stays pcalled regardless:
+        -- native SpriteRenderer's own image load (Assets.image, src/
+        -- render/Assets.lua) has no pcall of its own, and the engine's
+        -- render loop has none around entity:draw either (confirmed
+        -- elsewhere in this file) -- an unguarded miss here would still
+        -- crash the whole game rather than skip one entity's frame for
+        -- any OTHER reason a draw might fail, not just a missing file.
+        local nativeOk, nativeErr = pcall(nativeNpcDraw, self, ox, oy, scale)
+        if not nativeOk then
+          mod.log:warn("galar_gmax_dex: gen2 native draw fallback also failed for %s: %s",
+            tostring(self.ggdSpecies), tostring(nativeErr))
+        end
       end
     end
   end
@@ -693,7 +702,12 @@ return function(mod)
         activeSpawns[npcId] = {
           mapId = mapId, species = species, level = level,
         }
-        ensureNearestFilter(mod.path .. "/" .. WALKERS_REL .. "/" .. species .. ".png")
+        -- Was per-species (WALKERS_REL .. "/" .. species .. ".png") before
+        -- the shared-placeholder redesign above -- every species' native
+        -- sprite now points at the SAME file, so this pre-filters that
+        -- one path (filteredPaths' own cache makes every call after the
+        -- first a no-op, so this is cheap regardless of call frequency).
+        ensureNearestFilter(WALKER_PLACEHOLDER)
         for _, npc in ipairs(ow.npcs or {}) do
           if npc.id == npcId then
             -- Gen 1 only: applyLosslessDraw replaces npc.draw with a

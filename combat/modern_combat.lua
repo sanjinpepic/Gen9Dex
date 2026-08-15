@@ -92,6 +92,27 @@ return function(mod)
   end
   mod.exports.registerDamageModifier = registerDamageModifier
 
+  -- Part B Phase 5 Tier 1: real per-move variable base power (Heat Crash/
+  -- Heavy Slam's weight ratio, Power Trip's stat-stage count, Flail's HP
+  -- fraction). Deliberately separate from registerDamageModifier above --
+  -- that chain only ever scales the FINAL post-formula `d` (confirmed by
+  -- Snow's own Ice-Defense boost needing a special inline case instead of
+  -- going through it, this file's own earlier precedent), which is the
+  -- wrong shape for a genuine base-power SUBSTITUTION: real Showdown
+  -- computes these before the damage formula even starts, not as a
+  -- trailing multiplier, and forcing a substitution through a multiplier
+  -- (power/move.power) would compound the formula's own floor()s in the
+  -- wrong order. keyed by move id, single winner (first match), same
+  -- one-entry-per-move shape these moves actually need -- no move in
+  -- this batch has more than one power-override source.
+  local powerOverrides = {} -- { [moveId] = fn(ctx) -> integer power }
+  local function registerPowerOverride(moveId, fn)
+    assert(type(moveId) == "string" and moveId ~= "", "power override move id is required")
+    assert(type(fn) == "function", "power override must be a function")
+    powerOverrides[moveId] = fn
+  end
+  mod.exports.registerPowerOverride = registerPowerOverride
+
   local critStageModifiers = {} -- { fn(ctx) -> integer stage delta, ... }
   local function registerCritStageModifier(id, fn)
     assert(type(id) == "string" and id ~= "", "crit stage modifier id is required")
@@ -206,6 +227,158 @@ return function(mod)
   end)
 
   ------------------------------------------------------------------
+  -- Part B Phase 5 Tier 1: simple binary-condition power doublers.
+  -- Each move's own `effect` field points at an empty kind="full"
+  -- move_effects record (below) purely so isMoveDataComplete stops
+  -- treating it as stubbed -- same deliberate-empty-record precedent
+  -- GALAR_BLIZZARD_EFFECT already established (modern_weather.lua's own
+  -- header). The real mechanic is this priority-100 (same tier as STAB
+  -- -- Showdown's own modifier order has these move-specific doublers
+  -- and STAB as coequal, order-independent slots) registerDamageModifier
+  -- entry per move, keyed directly off ctx.move.id since none of these
+  -- generalize to more than one move.
+  ------------------------------------------------------------------
+  mod.content.move_effects:register("GMAX_ACROBATICS_EFFECT", { kind = "full" })
+  mod.content.move_effects:register("GMAX_VENOSHOCK_EFFECT", { kind = "full" })
+  mod.content.move_effects:register("GMAX_ASSURANCE_EFFECT", { kind = "full" })
+
+  -- Gen 1 mons have no held-item concept anywhere in this engine at all
+  -- (confirmed: zero references to a mon-level `item` field in the whole
+  -- src/pokemon/ tree, unlike Gen 2's real mon.item) -- so "no item" is
+  -- unconditionally true for a Gen 1 battler, and Acrobatics correctly
+  -- always doubles there (not a special case; it falls out of the same
+  -- check Gen 2 uses, matching how Gen 1 itself never had an item
+  -- economy in the real games either).
+  local function itemOf(who, gen2)
+    return gen2 and who.item or nil
+  end
+
+  registerDamageModifier("acrobatics_no_item", 100, function(ctx)
+    if ctx.move.id ~= "ACROBATICS" then return 1.0 end
+    return itemOf(ctx.user, ctx.gen2) and 1.0 or 2.0
+  end)
+
+  -- Cross-generation status reader (Gen 1: battler-wrapper's mon.status;
+  -- Gen 2: status lives directly on the raw mon, same convention as
+  -- itemOf above) -- confirmed real ids via src/battle/Status.lua/
+  -- StatusRegistry.lua ("PSN" for both regular and Toxic poison; this
+  -- engine does not distinguish a separate Toxic id, so Venoshock's real
+  -- Showdown behavior of doubling for either variant needs no extra
+  -- check here).
+  local function statusOf(who, gen2)
+    return gen2 and who.status or (who.mon and who.mon.status)
+  end
+
+  registerDamageModifier("venoshock_poisoned", 100, function(ctx)
+    if ctx.move.id ~= "VENOSHOCK" then return 1.0 end
+    return statusOf(ctx.target, ctx.gen2) == "PSN" and 2.0 or 1.0
+  end)
+
+  registerDamageModifier("assurance_hurt_this_turn", 100, function(ctx)
+    if ctx.move.id ~= "ASSURANCE" then return 1.0 end
+    return ctx.target.damagedThisTurn and 2.0 or 1.0
+  end)
+
+  -- Twister: double power while the target is in the semi-invulnerable
+  -- "in sky" phase of Fly/Bounce -- reuses the real `invulnerable` flag
+  -- those two-turn moves already set (confirmed: gimmick_dynamax.lua/
+  -- modern_weather.lua both read and clear it), not a new tracked state.
+  -- The 20% flinch half is unrelated to this modifier -- it rides the
+  -- move's own effect field (GALAR_FLINCH_EFFECT_20, moves_new.lua),
+  -- the same shared per-chance mechanism every other flinch move uses.
+  registerDamageModifier("twister_in_sky", 100, function(ctx)
+    if ctx.move.id ~= "TWISTER" then return 1.0 end
+    return ctx.target.invulnerable and 2.0 or 1.0
+  end)
+
+  ------------------------------------------------------------------
+  -- Part B Phase 5 Tier 1 (continued): real variable-base-power moves,
+  -- via registerPowerOverride (defined above, next to registerDamage
+  -- Modifier) rather than the multiplier chain -- these substitute
+  -- move.power outright, matching real Showdown's own formula order.
+  ------------------------------------------------------------------
+  mod.content.move_effects:register("GMAX_HEATCRASH_EFFECT", { kind = "full" })
+  mod.content.move_effects:register("GMAX_HEAVYSLAM_EFFECT", { kind = "full" })
+  mod.content.move_effects:register("GMAX_POWERTRIP_EFFECT", { kind = "full" })
+  mod.content.move_effects:register("GMAX_FLAIL_EFFECT", { kind = "full" })
+  -- Endeavor's real mechanic is the move.id=="ENDEAVOR" special case
+  -- directly inside computeModernDamage (bypasses the scaling formula
+  -- entirely) -- this empty record exists purely so isMoveDataComplete
+  -- stops treating it as stubbed, same as the four above.
+  mod.content.move_effects:register("GMAX_ENDEAVOR_EFFECT", { kind = "full" })
+
+  -- Current HP only (first return value) -- callers that also want max
+  -- HP call this directly for both slots rather than a second helper.
+  local function currentAndMaxHP(who, gen2)
+    local mon = gen2 and who or who.mon
+    local maxHp = gen2 and (mon.maxHp or (mon.stats and mon.stats.hp))
+      or (mon.stats and mon.stats.hp)
+    return mon.hp or 0, math.max(1, maxHp or 1)
+  end
+
+  -- Species weight, in whatever unit dexEntry carries it (kg preferred,
+  -- lbs fallback) -- confirmed real path: national_dex's own dex-list
+  -- code (gen2dexlist.lua:142-148) reads record.dexEntry.weight/
+  -- weightKg straight off a live registered pokemon record, and its own
+  -- register() call (nationaldex.lua:180-181) hands the whole record
+  -- (dexEntry included) to mod.content.pokemon:register unmodified -- so
+  -- this is real post-registration data, not raw pre-registration
+  -- source. Only the RATIO between two mons matters for Heat Crash/Heavy
+  -- Slam, so a consistent unit choice is all that's required, not a
+  -- specific one. A species with no weight data at all defers to the
+  -- move's plain, unboosted power (nil override, formula falls back to
+  -- move.power) rather than guessing a ratio.
+  local function speciesWeightOf(who, gen2)
+    local speciesId = gen2 and who.species or (who.mon and who.mon.species)
+    local def = speciesId and mod.content.pokemon:get(speciesId)
+    local dexEntry = def and def.dexEntry
+    if type(dexEntry) ~= "table" then return nil end
+    local w = dexEntry.weightKg or dexEntry.weight
+    return (type(w) == "number" and w > 0) and w or nil
+  end
+
+  -- Real Showdown tiers (Heat Crash/Heavy Slam, identical formula):
+  -- ratio = userWeight/targetWeight -- >=5 -> 120, >=4 -> 100, >=3 -> 80,
+  -- >=2 -> 60, else -> 40.
+  local function weightRatioPower(ctx)
+    local userW = speciesWeightOf(ctx.user, ctx.gen2)
+    local targetW = speciesWeightOf(ctx.target, ctx.gen2)
+    if not (userW and targetW and targetW > 0) then return nil end
+    local ratio = userW / targetW
+    if ratio >= 5 then return 120
+    elseif ratio >= 4 then return 100
+    elseif ratio >= 3 then return 80
+    elseif ratio >= 2 then return 60
+    else return 40 end
+  end
+  registerPowerOverride("HEATCRASH", weightRatioPower)
+  registerPowerOverride("HEAVYSLAM", weightRatioPower)
+
+  -- Power Trip's registerPowerOverride call is further down, right after
+  -- sideOfWho/stagesFor are actually declared (this file's own stat-
+  -- stage store) -- both are `local function`s defined later in this
+  -- same scope, so a closure up here would have captured them as
+  -- unresolved globals instead of the real locals, not a working
+  -- forward reference. See that call site's own comment for the
+  -- mechanic itself.
+
+  -- Flail: real Showdown HP-fraction tiers (permille, <= means at-or-
+  -- below): <=4 -> 200, <=10 -> 150, <=20 -> 100, <=34 -> 80, <=67 -> 40,
+  -- else -> 20. (416/1024, 1075/1024 etc. rounding is a Gen 3-era
+  -- hardware artifact this mod doesn't replicate -- the whole-percent
+  -- breakpoints above match real Showdown's own modern implementation.)
+  registerPowerOverride("FLAIL", function(ctx)
+    local hp, maxHp = currentAndMaxHP(ctx.user, ctx.gen2)
+    local pct = 100 * hp / maxHp
+    if pct <= 4 then return 200
+    elseif pct <= 10 then return 150
+    elseif pct <= 20 then return 100
+    elseif pct <= 34 then return 80
+    elseif pct <= 67 then return 40
+    else return 20 end
+  end)
+
+  ------------------------------------------------------------------
   -- GalarGmaxDex-owned stat-stage store (atk/def/spa/spd only -- speed/
   -- accuracy/evasion stay 100% native for both generations, out of
   -- scope this phase). Both native engines already track stages
@@ -254,6 +427,25 @@ return function(mod)
     if gen2 then return battle:sideOf(who) end
     return who.isPlayer and "player" or "enemy"
   end
+
+  -- Power Trip (Part B Phase 5 Tier 1): real Showdown is 20 + 20*(sum of
+  -- every POSITIVE stage across all 7 raiseable stats: atk/def/spa/spd/
+  -- spe/accuracy/evasion). This mod's own stage store above only tracks
+  -- atk/def/spa/spd (its own header a few lines up: speed/accuracy/
+  -- evasion stay native, out of scope this phase) -- speed/accuracy/
+  -- evasion stages are therefore NOT counted here. A genuine partial
+  -- implementation, flagged rather than silently passed off as complete:
+  -- a mon that only raised Speed/accuracy/evasion (never atk/def/spa/
+  -- spd) reads as +0 here and deals a flat 20 power, same as real
+  -- Showdown would only if none of the 7 stats were raised.
+  registerPowerOverride("POWERTRIP", function(ctx)
+    local stages = stagesFor(ctx.battle, sideOfWho(ctx.battle, ctx.user, ctx.gen2)) or {}
+    local total = 0
+    for _, key in ipairs({ "attack", "defense", "spa", "spd" }) do
+      total = total + math.max(0, stages[key] or 0)
+    end
+    return 20 + 20 * total
+  end)
 
   local function displayNameFor(battle, who, gen2)
     if gen2 then
@@ -538,6 +730,26 @@ return function(mod)
 
     local gen2 = isGen2Battle(ctx.battle)
 
+    -- Endeavor: not a scaled-power move at all (real PBS power=1 is that
+    -- convention's placeholder for "computed at runtime", same as Heat
+    -- Crash/Heavy Slam/Power Trip/Flail below) -- real Showdown sets
+    -- target HP straight down to user's current HP, dealing 0 (a genuine
+    -- fail, not a 1-damage hit) if the target is already at or below
+    -- that. mon.hp/mon.stats.hp are the confirmed real current/max HP
+    -- fields (modern_movepool_damage.lua:40's own header); Gen 2's own
+    -- fallback chain (maxHp, then stats.hp) is reused as-is via
+    -- currentAndMaxHP. Returns straight out of the whole formula --
+    -- crit/STAB/weather/type-effectiveness never apply to a fixed HP-set
+    -- effect in real Showdown either.
+    if move.id == "ENDEAVOR" then
+      local userHp = (currentAndMaxHP(user, gen2))
+      local targetHp = (currentAndMaxHP(target, gen2))
+      if targetHp <= userHp then
+        return 0, { crit = false, typeMult = 10 }
+      end
+      return targetHp - userHp, { crit = false, typeMult = 10 }
+    end
+
     -- Idempotent -- only fills fields that are missing, safe every call.
     -- Gen 1 only: user.def/user.mon are battler-wrapper fields that
     -- don't exist on Gen 2's raw mon objects -- gen2_modern_stats.lua
@@ -628,8 +840,18 @@ return function(mod)
     -- crit no longer doubles level. user.mon is the Gen 1 battler-
     -- wrapper's real-mon field; Gen 2's user IS the real mon already.
     local level = gen2 and user.level or user.mon.level
+    -- Real per-move variable power (Heat Crash/Heavy Slam/Power Trip/
+    -- Flail) substitutes here, before the formula ever multiplies by
+    -- power -- see registerPowerOverride's own header for why this has
+    -- to happen at THIS point rather than as a trailing multiplier. A
+    -- nil override (species weight data missing, etc.) falls back to
+    -- the move's own plain declared power unchanged.
+    local override = powerOverrides[move.id]
+    local power = (override and override({
+      battle = ctx.battle, user = user, target = target, gen2 = gen2,
+    })) or move.power
     local d = math.floor(math.floor(2 * level / 5) + 2)
-    d = math.floor(math.floor(d * move.power * atk / math.max(1, dfn)) / 50) + 2
+    d = math.floor(math.floor(d * power * atk / math.max(1, dfn)) / 50) + 2
 
     if crit then
       d = math.floor(d * 1.5)
@@ -692,6 +914,33 @@ return function(mod)
   end)
   mod.events:on("battle.ended", function(ev)
     if ev and ev.battle then stageState[ev.battle] = nil end
+  end)
+
+  ------------------------------------------------------------------
+  -- Part B Phase 5: shared "damagedThisTurn" flag -- Assurance (Tier 1)
+  -- and Focus Punch (Tier 2) both need "did this battler take real
+  -- battle damage this turn", which nothing native tracks. Direct field
+  -- on the battler/mon itself, same convention as the engine's own
+  -- user.flinched/user.thrashTurns -- set on battle.damage_dealt
+  -- (confirmed real event, fires post-computation with the actual dealt
+  -- amount: EffectRegistry.lua:286 Gen 1, gen2/Battle.lua:1242 Gen 2,
+  -- identical payload shape both), cleared on battle.turn_started
+  -- (confirmed real, fires both generations: BattleState.lua:2410,
+  -- gen2/Battle.lua:4069) rather than turn_ended, so a status/hazard
+  -- tick landing between turn_ended and the next turn's move selection
+  -- doesn't leak a stale flag into that next turn's Focus Punch check.
+  ------------------------------------------------------------------
+  mod.events:on("battle.damage_dealt", function(ev)
+    if ev and ev.target and (ev.damage or 0) > 0 then
+      ev.target.damagedThisTurn = true
+    end
+  end)
+  mod.events:on("battle.turn_started", function(ev)
+    local battle = ev and ev.battle
+    if not battle then return end
+    for _, b in ipairs({ battle.player, battle.enemy }) do
+      if b then b.damagedThisTurn = false end
+    end
   end)
 
   ------------------------------------------------------------------
