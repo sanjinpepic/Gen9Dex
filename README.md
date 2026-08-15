@@ -5,6 +5,7 @@ Scope:
 -EV, IV, Natures implementation
 -Battle effective Abilities
 -Fields and Weather conditions
+-All 934 moves up dated to generation 9
 -Dynamax (Dynamax level, Gigantamax factor), Mega-evos, Z-moves, Tera type.
 -Held Item expansion + combat effects
 
