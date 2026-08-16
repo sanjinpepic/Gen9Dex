@@ -3,8 +3,8 @@
 -- used by the native damage calc, which already has its own answer for
 -- this (Damage.isSpecial / TypeChart.category, unchanged, untouched here).
 --
--- Native Gen 1 moves (data/generated/moves.lua, machine-generated from the
--- ROM) have no category field at all: Gen 1 determines Physical/Special
+-- Native Gen 1 moves (the engine's own generated moves.lua, machine-
+-- generated from the ROM) have no category field at all: Gen 1 determines Physical/Special
 -- purely from the move's TYPE, via the same data-driven lookup the native
 -- damage calc already uses (TypeChart.category, src/battle/TypeChart.lua)
 -- -- reused here rather than reimplemented. Status moves are power = 0 in

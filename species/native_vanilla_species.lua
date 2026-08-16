@@ -1,5 +1,5 @@
 -- The engine's native, cart-baked-in species roster -- Kanto 151 (gen1recomp-
--- dev's own ROM-extracted data/generated/pokemon.lua) plus Johto 152-251
+-- dev's own ROM-extracted generated pokemon.lua) plus Johto 152-251
 -- (tools/rom_manifest_gold.json's pokemonAssets keys, 2 mis-spelled Kanto
 -- duplicates dropped -- pokemon.lua's own spelling wins). Same list, same
 -- methodology, tools/generate_sprite_pack_data.ps1 already used to classify

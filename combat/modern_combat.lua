@@ -623,8 +623,8 @@ return function(mod)
   registerStatEffect("DEFENSE_DOWN2_EFFECT", "defense", -2, false)
 
   -- The only three native Gen-1 moves that touched the old shared
-  -- "special" stage (confirmed by grepping data/generated/moves.lua for
-  -- every SPECIAL_UP1_EFFECT/SPECIAL_UP2_EFFECT/SPECIAL_DOWN_SIDE_EFFECT
+  -- "special" stage (confirmed by grepping the engine's own generated
+  -- moves.lua for every SPECIAL_UP1_EFFECT/SPECIAL_UP2_EFFECT/SPECIAL_DOWN_SIDE_EFFECT
   -- reference -- exactly AMNESIA, GROWTH, PSYCHIC_M, nothing else).
   -- Re-pointed at real Gen 2+ targeting instead of Gen 1's combined
   -- Special stat. None of GalarGmaxDex's own 174 new moves reference any

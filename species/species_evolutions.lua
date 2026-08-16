@@ -79,10 +79,11 @@ return {
     -- FIRESTONE/LEAFSTONE/MOONSTONE/THUNDERSTONE/WATERSTONE are
     -- deliberately NOT here -- the source pack's own ids for those five
     -- don't match this engine's real native ones (confirmed by reading
-    -- data/generated/items.lua: FIRE_STONE, LEAF_STONE, MOON_STONE,
-    -- THUNDER_STONE, WATER_STONE, underscored) -- every evolutions[] row
-    -- below referencing one of those five was remapped to the real native
-    -- id instead of registering a second, dead duplicate item.
+    -- the engine's own generated items.lua: FIRE_STONE, LEAF_STONE,
+    -- MOON_STONE, THUNDER_STONE, WATER_STONE, underscored) -- every
+    -- evolutions[] row below referencing one of those five was remapped
+    -- to the real native id instead of registering a second, dead
+    -- duplicate item.
     SYRUPYAPPLE      = { name = "Syrupy Apple" },
     METALALLOY       = { name = "Metal Alloy" },
     AUSPICIOUSARMOR  = { name = "Auspicious Armor" },
@@ -90,7 +91,8 @@ return {
     CRACKEDPOT       = { name = "Cracked Pot" },
     UNREMARKABLETEACUP = { name = "Unremarkable Teacup" },
     -- Gen 4/8 evolution items with no Gen-1/2 native equivalent at all
-    -- (confirmed absent from data/generated/items.lua under any naming).
+    -- (confirmed absent from the engine's own generated items.lua under
+    -- any naming).
     SUNSTONE         = { name = "Sun Stone" },
     DUSKSTONE        = { name = "Dusk Stone" },
     SHINYSTONE       = { name = "Shiny Stone" },
