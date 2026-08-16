@@ -1,25 +1,26 @@
 {
   "id": "g9-battle-engine",
-  "name": "G9 Battle Engine",
+  "title": "G9 Battle Engine",
+  "author": "Tekky",
   "version": "1.2.0",
-  "entry": "main.lua",
-  "api": 2,
-  "game_version": ">=0.1.45",
-  "priority": 100,
-  "profile": "content",
-  "category": "GAMEPLAY",
-  "games": [
-    "gen1",
-    "gen2"
+  "categories": [
+    "GAMEPLAY",
+    "CONTENT",
+    "BALANCE",
+    "LIBRARY"
+  ],
+  "repo": "https://github.com/tectorifter/Gen9Dex",
+  "summary": "Gen 9 Battle Framework",
+  "github": "tectorifter/Gen9Dex",
+  "game_version": "0.1.45",
+  "license": "MIT",
+  "dependencies": [
+    "national_dex"
   ],
   "permissions": [
     "engine_internals"
   ],
-  "options_schema": "options.lua",
-  "dependencies": [
-    "national_dex"
-  ],
-  "optional_dependencies": [],
-  "description": "4 gimmicks, updated battle engine, overworld encounters, followers, alphamon .",
-  "github": "tectorifter/Gen9Dex"
+  "api": 2,
+  "profile": "content",
+  "experimental": true
 }
