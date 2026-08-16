@@ -1,8 +1,9 @@
 {
   "id": "g9-battle-engine",
-  "title": "G9 Battle Engine",
+  "name": "G9 Battle Engine",
   "author": "Tekky",
   "version": "1.2.0",
+  "entry": main.lua,
   "categories": [
     "GAMEPLAY",
     "CONTENT",
@@ -13,6 +14,7 @@
   "summary": "Gen 9 Battle Framework",
   "github": "tectorifter/Gen9Dex",
   "game_version": "0.1.45",
+  "priority": 100,
   "license": "MIT",
   "dependencies": [
     "national_dex"
