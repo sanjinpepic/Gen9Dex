@@ -3,7 +3,7 @@
   "name": "G9 Battle Engine",
   "author": "Tekky",
   "version": "1.2.0",
-  "entry": main.lua,
+  "entry": "main.lua",
   "categories": [
     "GAMEPLAY",
     "CONTENT",
