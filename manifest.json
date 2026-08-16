@@ -8,10 +8,18 @@
   "priority": 100,
   "profile": "content",
   "category": "GAMEPLAY",
-  "games": ["gen1", "gen2"],
-  "permissions": ["engine_internals"],
+  "games": [
+    "gen1",
+    "gen2"
+  ],
+  "permissions": [
+    "engine_internals"
+  ],
   "options_schema": "options.lua",
-  "dependencies": ["national_dex"],
+  "dependencies": [
+    "national_dex"
+  ],
   "optional_dependencies": [],
-  "description": "4 gimmicks, updated battle engine, overworld encounters, followers, alphamon ."
+  "description": "4 gimmicks, updated battle engine, overworld encounters, followers, alphamon .",
+  "github": "tectorifter/Gen9Dex"
 }
