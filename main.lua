@@ -1979,9 +1979,9 @@ return function(mod)
   -- install_gym_trainer_teams.lua) -- this is the call site alone,
   -- commented out rather than deleted, so re-enabling once the actual
   -- crash cause is found is a one-line change, not a rebuild.
-  -- local gymTrainerTeams = loadSibling(mod, "overworld/gym_trainer_teams.lua")
-  -- local installGymTrainerTeams = loadSibling(mod, "overworld/install_gym_trainer_teams.lua")
-  -- installGymTrainerTeams(mod, gymTrainerTeams)
+  local gymTrainerTeams = loadSibling(mod, "overworld/gym_trainer_teams.lua")
+  local installGymTrainerTeams = loadSibling(mod, "overworld/install_gym_trainer_teams.lua")
+  installGymTrainerTeams(mod, gymTrainerTeams)
 
   -- EV yield on faint: every mon that gains EXP from a KO gains that
   -- species' national_dex EV yield too -- listens to battle.exp_gained,
