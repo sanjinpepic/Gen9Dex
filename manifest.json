@@ -1,10 +1,11 @@
 {
   "id": "g9-battle-engine",
-  "name": "g9-battle-engine-test",
+  "name": "g9-battle-engine",
   "version": "1.2.3",
   "api": 2,
   "entry": "main.lua",
   "profile": "content",
+  "github": "github.com/tectorifter/Gen9Dex",
   "game_version": ">=0.1.45",
   "games": [
     "gen2"
@@ -19,6 +20,5 @@
   ],
   "optional_dependencies": [],
   "description": "4 gimmicks, updated battle engine, overworld encounters, followers, alphamon .",
-  "options_schema": "options.lua",
-  "repo": "https://github.com/tectorifter/Gen9Dex"
+  "options_schema": "options.lua"
 }
