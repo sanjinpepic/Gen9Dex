@@ -36,6 +36,15 @@
 return function(mod)
   local Game = require("src.core.Game")
   local Assets = require("src.render.Assets")
+  -- Confirmed live (2026-08-19, via diagnostic logging): mod.hooks
+  -- exposes :wrap (register a handler) but NOT :call (trigger a chain) --
+  -- mod.hooks.call is nil at runtime, so mod.hooks:call(...) was never
+  -- reachable, argument order notwithstanding. The real native encounter
+  -- call sites (src/world/OverworldController.lua) trigger hook chains
+  -- through the separately-requirable Runtime module instead, and this
+  -- mod's own modern_combat.lua already proves that path is open to mod
+  -- code (Runtime.wantsHook/Runtime.call, both in active use there).
+  local Runtime = require("src.mods.Runtime")
 
   -- Gen 2 support. Confirmed by direct source read (not assumed): Gen 2's
   -- real wild-encounter data lives at a completely different Data key and
@@ -139,11 +148,26 @@ return function(mod)
         })
       end)
       if okReg then
+        -- Register both the native key (e.g. lowercase "pidgey" from Gold data)
+        -- and its uppercase variant (e.g. "PIDGEY" returned by gen_2_randomizer_plus
+        -- and other randomizers that use GOLD_SPECIES_IDS uppercase constants).
         spriteIdFor[id] = spriteId
+        spriteIdFor[id:upper()] = spriteId
+        spriteIdFor[id:lower()] = spriteId
         registered = registered + 1
       end
     end
     mod.log:info("galar_gmax_dex: registered %d wild overworld sprites (Phase 7 W1)", registered)
+  end
+
+  -- Resolve a species string to its spriteId regardless of case.
+  -- gen_2_randomizer_plus returns UPPERCASE ids ("PIDGEY"), while the engine's
+  -- own encounter tables use lowercase ("pidgey"). Both map to the same entry.
+  local function resolveSpeciesId(species)
+    if not species then return nil end
+    return spriteIdFor[species]
+      or spriteIdFor[species:upper()]
+      or spriteIdFor[species:lower()]
   end
 
   -- Shared with overworld_followers.lua (F1): both draw the same native
@@ -175,71 +199,68 @@ return function(mod)
   -- directly for its own 3D rendering, a separate, not-yet-investigated
   -- system this override does not reach.
   local OVERWORLD_REL = "assets/overworld"
-  local overworldImages = {}
-  -- suffix: "" (down/front, the original single crop), "_up", or "_left"
-  -- (right reuses "_left" mirrored at draw time, not a separate file --
-  -- matches this mod's existing native-format convention of right =
-  -- mirrored left, e.g. SpriteRenderer's own WALK/STAND tables). Confirmed
-  -- the source sheet's row layout by opening a couple of samples directly
-  -- (CHARMANDER.png, PIDGEY.png, PIKACHU.png): row0=down, row1=left
-  -- profile, row3=up -- a 4-column x 4-row grid, columns being 4 walk-
-  -- cycle frames. tools/generate_overworld_walkcycle.ps1 (successor to
-  -- the earlier scratchpad-only gen_full_roster_overworld.ps1/
-  -- gen_directional_overworld.ps1, whose row/column convention it reuses
-  -- exactly) sliced all 4 columns for the full 1403-species roster.
-  --
-  -- frame: 1-4, defaults to 1 -- column 0, the original single crop every
-  -- call site used before walk-cycle frames existed. Infixed BEFORE the
-  -- direction suffix (frame 1 has no infix at all, matching the pre-
-  -- existing on-disk names): <ID>.png/_2/_3/_4 (down),
-  -- <ID>_left.png/_2_left/_3_left/_4_left, same for _up. Species not
-  -- covered by the sliced roster (an asset-free build, or genuinely
-  -- outside the ~1403) simply have no frame >1 on disk and read as such
-  -- via the normal pcall existence check below -- no separate "does this
-  -- species have walk frames" concept, agnostic the same way frame 1
-  -- always was.
-  local FRAME_INFIX = { [1] = "", [2] = "_2", [3] = "_3", [4] = "_4" }
-  local function loadOverworldImage(species, suffix, frame)
-    local infix = FRAME_INFIX[frame or 1] or ""
-    local key = species .. infix .. (suffix or "")
-    local cached = overworldImages[key]
+  -- assets/overworld/<ID>.png is the INTACT source sheet, one file per
+  -- species/form -- explicit user call: the earlier version of this
+  -- pipeline pre-cropped every direction/frame into its own file (12 per
+  -- species, ~14,700 total), which meant far more file reads at runtime
+  -- for no real benefit over reading one cached sheet image and slicing
+  -- the right cell with a love.graphics.Quad at draw time, which is what
+  -- this does instead. Confirmed sheet layout (tools/
+  -- generate_overworld_walkcycle.ps1's own documentation, itself checked
+  -- against real samples -- CHARMANDER.png, PIDGEY.png, PIKACHU.png):
+  -- 256x256, 4-column x 4-row grid. row0=down, row1=left profile, row2=
+  -- right profile (unused here -- this mod's existing convention is
+  -- right = left mirrored at draw time, e.g. SpriteRenderer's own WALK/
+  -- STAND tables), row3=up. Columns are 4 walk-cycle frames.
+  local overworldSheets = {}
+  local function loadOverworldSheet(species)
+    local cached = overworldSheets[species]
     if cached ~= nil then
       if cached == false then return nil end
       return cached
     end
-    local path = mod.path .. "/" .. OVERWORLD_REL .. "/" .. species .. infix .. (suffix or "") .. ".png"
+    local path = mod.path .. "/" .. OVERWORLD_REL .. "/" .. species .. ".png"
     local ok, img = pcall(love.graphics.newImage, path)
     if ok and img then
       img:setFilter("nearest", "nearest")
-      overworldImages[key] = img
+      overworldSheets[species] = img
       return img
     end
-    overworldImages[key] = false
+    overworldSheets[species] = false
     return nil
   end
 
-  -- How many contiguous walk-cycle frames actually exist for this
-  -- species+direction (1 for the "000" placeholder and anything else the
-  -- sliced roster doesn't cover, up to 4 for the full roster) -- probed
-  -- once and cached permanently, same "can't change mid-session" reasoning
-  -- as main.lua's own spriteFileExists cache. Frame-cycling below always
-  -- wraps against THIS count rather than assuming 4, so a 1-frame set
-  -- (the fallback tier) just always draws frame 1, no special-casing.
-  local frameCountCache = {}
-  local function frameCountFor(species, suffix)
-    local key = species .. (suffix or "")
-    local cached = frameCountCache[key]
-    if cached ~= nil then return cached end
-    local count = 0
-    for frame = 1, 4 do
-      if loadOverworldImage(species, suffix, frame) then
-        count = frame
-      else
-        break
-      end
-    end
-    frameCountCache[key] = count
-    return count
+  -- suffix: "" (down/front), "_up", or "_left" (right reuses "_left"
+  -- mirrored at draw time, not a separate quad).
+  local ROW_FOR_SUFFIX = { [""] = 0, ["_up"] = 3, ["_left"] = 1 }
+  -- Quads are cheap, tiny objects but still worth caching per (species,
+  -- row, col) rather than constructing one every draw call/frame.
+  local quadCache = {}
+  local function overworldQuad(species, suffix, frame)
+    local img = loadOverworldSheet(species)
+    if not img then return nil end
+    local row = ROW_FOR_SUFFIX[suffix or ""] or 0
+    local col = (frame or 1) - 1
+    local key = species .. "|" .. row .. "|" .. col
+    local cached = quadCache[key]
+    if cached then return img, cached[1], cached[2], cached[3] end
+    local iw, ih = img:getDimensions()
+    local tw, th = iw / 4, ih / 4
+    local quad = love.graphics.newQuad(col * tw, row * th, tw, th, iw, ih)
+    quadCache[key] = { quad, tw, th }
+    return img, quad, tw, th
+  end
+
+  -- Every real sheet in the generated roster always has all 4 columns
+  -- (confirmed: overworldExtraction.py's own crop_walkcycle-turned-flat-
+  -- copy source is always a full 4x4 grid) -- unlike the old per-file
+  -- probe, there's no per-direction variance to check for once the sheet
+  -- itself loaded. Species outside the generated roster (an asset-free
+  -- build, or genuinely uncovered) simply have no sheet at all, frame
+  -- count 0, and fall through to the Cyndaquil fallback below.
+  local function frameCountFor(species)
+    if loadOverworldSheet(species) then return 4 end
+    return 0
   end
 
   -- Walking: extends the native NPC:walkPhase()'s own convention
@@ -269,9 +290,12 @@ return function(mod)
   end
 
   -- Frame index for the current facing, walking or idle -- shared by both
-  -- drawLossless (Gen 1) and drawLosslessGen2 below.
+  -- drawLossless (Gen 1) and drawLosslessGen2 below. Frame count no longer
+  -- depends on direction (one sheet covers all of them), so `suffix` is
+  -- unused here now -- kept as a parameter so both call sites below don't
+  -- need to change their own call shape.
   local function currentFrame(self, species, suffix)
-    local frameCount = frameCountFor(species, suffix)
+    local frameCount = frameCountFor(species)
     return (self.moving and walkFrame(self, frameCount) or idleFrame(frameCount)), frameCount
   end
 
@@ -371,19 +395,14 @@ return function(mod)
         else suffix = "" end
 
         local frame = currentFrame(self, self.ggdSpecies, suffix)
-        local img = loadOverworldImage(self.ggdSpecies, suffix, frame)
-        if not img and suffix ~= "" then
-          frame = currentFrame(self, self.ggdSpecies, "")
-          img = loadOverworldImage(self.ggdSpecies, "", frame)
-          mirror = false
-        end
+        local img, quad, tw, th = overworldQuad(self.ggdSpecies, suffix, frame)
         if not img then
           img = loadCyndaquilFallback()
-          mirror = false
+          quad, mirror = nil, false
         end
         if not img then return false end
 
-        local iw, ih = img:getWidth(), img:getHeight()
+        local iw, ih = tw or img:getWidth(), th or img:getHeight()
         local drawScale = (displayHeight() / ih) * scale
         local dw, dh = iw * drawScale, ih * drawScale
         -- Horizontally centered on the tile; vertically anchored to the
@@ -405,10 +424,18 @@ return function(mod)
         local x = math.floor(centerX - dw / 2)
         local y = math.floor(groundY - dh)
         love.graphics.setColor(1, 1, 1, 1)
-        if mirror then
-          love.graphics.draw(img, x + dw, y, 0, -drawScale, drawScale)
+        if quad then
+          if mirror then
+            love.graphics.draw(img, quad, x + dw, y, 0, -drawScale, drawScale)
+          else
+            love.graphics.draw(img, quad, x, y, 0, drawScale, drawScale)
+          end
         else
-          love.graphics.draw(img, x, y, 0, drawScale, drawScale)
+          if mirror then
+            love.graphics.draw(img, x + dw, y, 0, -drawScale, drawScale)
+          else
+            love.graphics.draw(img, x, y, 0, drawScale, drawScale)
+          end
         end
         return true
       end
@@ -459,7 +486,7 @@ return function(mod)
   local function drawLossless(self, camX, camY)
     -- Directional facing so the sprite shows which way it's actually
     -- walking instead of always the down/front crop. "right" is "_left"
-    -- mirrored (see loadOverworldImage's own comment), not a fourth file.
+    -- mirrored (see overworldQuad's own comment), not a fourth quad row.
     local facing = self.facing or "down"
     local suffix, mirror
     if facing == "up" then suffix = "_up"
@@ -468,25 +495,17 @@ return function(mod)
     else suffix = "" end
 
     local frame = currentFrame(self, self.ggdSpecies, suffix)
-    local img = loadOverworldImage(self.ggdSpecies, suffix, frame)
-    if not img and suffix ~= "" then
-      -- directional crop missing for this species (should not happen for
-      -- the generated roster, but never worse than the old single-frame
-      -- behavior): fall back to the base down/front crop.
-      frame = currentFrame(self, self.ggdSpecies, "")
-      img = loadOverworldImage(self.ggdSpecies, "", frame)
-      mirror = false
-    end
+    local img, quad, tw, th = overworldQuad(self.ggdSpecies, suffix, frame)
     if not img then
       img = loadCyndaquilFallback()
-      mirror = false
+      quad, mirror = nil, false
     end
     if not img then
       local sprite, px, py, poseFacing, phase, flip = self:pose()
       if sprite then sprite:draw(px, py, camX, camY, poseFacing, phase, flip) end
       return
     end
-    local iw, ih = img:getWidth(), img:getHeight()
+    local iw, ih = tw or img:getWidth(), th or img:getHeight()
     local scale = displayHeight() / ih
     local dw, dh = iw * scale, ih * scale
     -- horizontally centered on the tile, feet anchored to the tile's
@@ -496,13 +515,21 @@ return function(mod)
     local y = math.floor(self.py - camY + 16 - dh)
     love.graphics.setColor(1, 1, 1, 1)
 
-    if mirror then
-      -- same "draw from the far edge with a negative scale" convention
-      -- already used for follower mirroring in main.lua's SpriteRenderer
-      -- draw wrap.
-      love.graphics.draw(img, x + dw, y, 0, -scale, scale)
+    -- same "draw from the far edge with a negative scale" convention
+    -- already used for follower mirroring in main.lua's SpriteRenderer
+    -- draw wrap.
+    if quad then
+      if mirror then
+        love.graphics.draw(img, quad, x + dw, y, 0, -scale, scale)
+      else
+        love.graphics.draw(img, quad, x, y, 0, scale, scale)
+      end
     else
-      love.graphics.draw(img, x, y, 0, scale, scale)
+      if mirror then
+        love.graphics.draw(img, x + dw, y, 0, -scale, scale)
+      else
+        love.graphics.draw(img, x, y, 0, scale, scale)
+      end
     end
   end
 
@@ -552,39 +579,237 @@ return function(mod)
     return
   end
 
-  -- ------- Phase 2: spawn state + species/level selection -------------
+  -- ------- Phase 2: spawn state + provider registry + selection -------------
   -- npcId -> { mapId, species, level }
   local activeSpawns = {}
 
+  local spawnProviders = {}
+
+  local function registerSpawnProvider(id, provider)
+    if not id or not provider then return end
+    spawnProviders[id] = provider
+    mod.log:info("galar_gmax_dex: registered spawn provider '%s'", tostring(id))
+  end
+
+  local function unregisterSpawnProvider(id)
+    if not id then return end
+    spawnProviders[id] = nil
+    mod.log:info("galar_gmax_dex: unregistered spawn provider '%s'", tostring(id))
+  end
+
+  mod.exports.registerSpawnProvider = registerSpawnProvider
+  mod.exports.unregisterSpawnProvider = unregisterSpawnProvider
+
   -- Live-read from Mod Manager -> GalarGmaxDex -> Max Per Map
-  -- (installDebugOptions, main.lua) instead of a fixed constant, so
-  -- density can be A/B tested without a restart.
   local function maxPerMap()
     return mod.options:get("wild_max_per_map") or 4
   end
-  local MIN_ELIGIBLE_PER_SPAWN = 15 -- don't crowd tiny grass patches
+  local MIN_ELIGIBLE_PER_SPAWN = 5 -- Allow small ponds and small cave rooms to spawn wild Pokemon
 
-  -- Mirrors Encounter.roll's own bucket-threshold algorithm (weighted
-  -- slots out of 256) against the same mod.content.encounters data,
-  -- without requiring the "did a step happen" gate that function assumes
-  -- -- we always want a firm species+level pick for a tile we've already
-  -- decided to spawn on.
   local DEFAULT_BUCKETS = { 51, 102, 141, 166, 191, 216, 229, 242, 252, 256 }
+  local GEN2_BUCKETS = { 30, 60, 80, 90, 95, 99, 100 }
 
-  local function rollSlot(grassDef)
-    if not grassDef or not grassDef.slots or #grassDef.slots == 0 then
-      return nil
+  local function getTimeOfDay(ow)
+    if not ow then return "DAY" end
+    local d = ow.daytime or ow.timeOfDay or ow.time_of_day
+    if type(d) == "string" and d ~= "" then
+      return d:upper()
+    elseif type(d) == "number" then
+      if d == 1 then return "MORN" end
+      if d == 2 then return "DAY" end
+      if d == 3 then return "NITE" end
     end
-    local buckets = grassDef.buckets or DEFAULT_BUCKETS
-    local pick = love.math.random(0, 255)
-    for i, threshold in ipairs(buckets) do
-      if pick < threshold then
-        local slot = grassDef.slots[i]
-        if slot then return slot.species, slot.level end
-        return nil
+    return "DAY"
+  end
+
+  local function rollGen2NativeEncounter(mapId, encounterKind, daytime)
+    local ow = mod.world:overworld()
+    if not (ow and ow.encounters) then return nil, nil end
+    local kind = encounterKind or "grass"
+    daytime = daytime or getTimeOfDay(ow)
+    if (kind == "surf" or kind == "water") and Gen2Encounter then
+      if type(Gen2Encounter.surfSlot) == "function" then
+        local p = Gen2Encounter.surfSlot(ow.encounters, mapId, daytime, nil)
+        if p then return p.species, p.level end
+      elseif type(Gen2Encounter.waterSlot) == "function" then
+        local p = Gen2Encounter.waterSlot(ow.encounters, mapId, daytime, nil)
+        if p then return p.species, p.level end
       end
     end
-    return nil
+    if Gen2Encounter and type(Gen2Encounter.grassSlot) == "function" then
+      local p = Gen2Encounter.grassSlot(ow.encounters, mapId, daytime, nil)
+      return p and p.species, p and p.level
+    end
+    return nil, nil
+  end
+
+  local function discoverModProviders()
+    if not (mod and type(mod.find) == "function") then return end
+    local candidateIds = { "gen_2_randomizer_plus", "randomizer", "wilds_of_kanto", "all_catchable_mod", "custom_spawns" }
+    for _, otherId in ipairs(candidateIds) do
+      if not spawnProviders[otherId] and otherId ~= mod.id then
+        local ok, otherMod = pcall(mod.find, otherId)
+        if ok and otherMod and otherMod.exports then
+          local exp = otherMod.exports
+          local p = exp.overworldSpawnProvider or exp.spawnProvider or exp.provider
+          if p and type(p.get) == "function" then
+            registerSpawnProvider(otherId, p)
+          elseif type(exp.getOverworldSpawns) == "function" then
+            registerSpawnProvider(otherId, { apiVersion = 1, get = exp.getOverworldSpawns })
+          elseif type(exp.getEncounter) == "function" then
+            registerSpawnProvider(otherId, { apiVersion = 1, get = exp.getEncounter })
+          elseif type(exp.getSpawns) == "function" then
+            registerSpawnProvider(otherId, { apiVersion = 1, get = exp.getSpawns })
+          end
+        end
+      end
+    end
+  end
+
+  local function getSpawnDataForMap(mapId, encounterKind)
+    encounterKind = encounterKind or "grass"
+    local ow = mod.world:overworld()
+    local timeOfDay = getTimeOfDay(ow)
+
+    if not spawnProviders[mod.id] and mod.exports.overworldSpawnProvider then
+      registerSpawnProvider(mod.id, mod.exports.overworldSpawnProvider)
+    end
+    discoverModProviders()
+
+    -- 1. Check external registered providers (excluding mod.id)
+    for id, provider in pairs(spawnProviders) do
+      if id ~= mod.id and provider and type(provider.get) == "function" then
+        local ok, data = pcall(provider.get, mapId, encounterKind, timeOfDay)
+        if ok and data and data.slots and #data.slots > 0 then
+          return data, id
+        end
+      end
+    end
+
+    -- 2. Check GalarGmaxDex provider (mod.id)
+    local myProvider = spawnProviders[mod.id]
+    if myProvider and type(myProvider.get) == "function" then
+      local ok, data = pcall(myProvider.get, mapId, encounterKind, timeOfDay)
+      if ok and data and data.slots and #data.slots > 0 then
+        return data, mod.id
+      end
+    end
+
+    -- 3. Fallback to live engine encounters (ow.encounters for Gen 2, Game.data.encounters for Gen 1)
+    if isGen2Boot then
+      if ow and ow.encounters then
+        local kindTable = ow.encounters[encounterKind] or ow.encounters["grass"] or ow.encounters["water"]
+        local mapDef = kindTable and kindTable[mapId]
+        if mapDef then
+          local rate = mapDef.rates and (mapDef.rates[timeOfDay] or mapDef.rates.DAY or mapDef.rates.MORN or mapDef.rates.NITE) or 25
+          local slots = nil
+          if mapDef.slots then
+            if mapDef.slots[timeOfDay] and #mapDef.slots[timeOfDay] > 0 then
+              slots = mapDef.slots[timeOfDay]
+            elseif mapDef.slots["DAY"] and #mapDef.slots["DAY"] > 0 then
+              slots = mapDef.slots["DAY"]
+            elseif mapDef.slots["MORN"] and #mapDef.slots["MORN"] > 0 then
+              slots = mapDef.slots["MORN"]
+            elseif mapDef.slots["NITE"] and #mapDef.slots["NITE"] > 0 then
+              slots = mapDef.slots["NITE"]
+            elseif mapDef.slots[1] then
+              slots = mapDef.slots
+            end
+          end
+          if slots and #slots > 0 then
+            return { rate = rate, slots = slots, nativeGen2 = true }, "native_gen2"
+          end
+          -- Fallback if rate is checkable
+          local gen2Rate = 0
+          if (encounterKind == "surf" or encounterKind == "water") and type(Gen2Encounter.surfRate) == "function" then
+            gen2Rate = Gen2Encounter.surfRate(ow.encounters, mapId, timeOfDay)
+          end
+          if gen2Rate <= 0 and type(Gen2Encounter.grassRate) == "function" then
+            gen2Rate = Gen2Encounter.grassRate(ow.encounters, mapId, timeOfDay)
+          end
+          if gen2Rate > 0 then
+            return { nativeGen2 = true, rate = gen2Rate }, "native_gen2"
+          end
+        end
+      end
+    else
+      local encDef = Game.data and Game.data.encounters and Game.data.encounters[mapId]
+      if encDef then
+        local tableDef = encDef[encounterKind] or encDef.grass or encDef.water
+        if tableDef and tableDef.slots and #tableDef.slots > 0 then
+          return tableDef, "native_gen1"
+        end
+      end
+    end
+
+    return nil, nil
+  end
+
+  local function rollSlotFromData(spawnData)
+    if not spawnData or not spawnData.slots or #spawnData.slots == 0 then
+      return nil
+    end
+    local slots = spawnData.slots
+    local numSlots = #slots
+
+    -- 1. If explicit buckets table is provided
+    if spawnData.buckets and #spawnData.buckets > 0 then
+      local maxVal = spawnData.buckets[#spawnData.buckets] or 256
+      local pick = love.math.random(0, maxVal - 1)
+      for i, threshold in ipairs(spawnData.buckets) do
+        if pick < threshold then
+          local s = slots[i] or slots[1]
+          return s.species, s.level
+        end
+      end
+    end
+
+    -- 2. If slots specify explicit 'weight' or 'chance' fields
+    local totalWeight = 0
+    local hasExplicitWeights = false
+    for _, s in ipairs(slots) do
+      local w = s.weight or s.chance
+      if w and type(w) == "number" and w > 0 then
+        hasExplicitWeights = true
+        totalWeight = totalWeight + w
+      end
+    end
+
+    if hasExplicitWeights and totalWeight > 0 then
+      local roll = love.math.random(1, totalWeight)
+      local current = 0
+      for _, s in ipairs(slots) do
+        local w = s.weight or s.chance or 1
+        current = current + w
+        if roll <= current then
+          return s.species, s.level
+        end
+      end
+    end
+
+    -- 3. Standard fixed ladders for 7 slots (Gen 2) or 10 slots (Gen 1)
+    if numSlots == 7 then
+      local r = love.math.random(1, 100)
+      for i, threshold in ipairs(GEN2_BUCKETS) do
+        if r <= threshold then
+          local s = slots[i] or slots[1]
+          return s.species, s.level
+        end
+      end
+    elseif numSlots == 10 then
+      local pick = love.math.random(0, 255)
+      for i, threshold in ipairs(DEFAULT_BUCKETS) do
+        if pick < threshold then
+          local s = slots[i] or slots[1]
+          return s.species, s.level
+        end
+      end
+    end
+
+    -- 4. Generic uniform selection for arbitrary slot counts (>10 slots)
+    local idx = love.math.random(1, numSlots)
+    local s = slots[idx]
+    return s and s.species, s and s.level
   end
 
   -- ------- Phase 3: eligible tile scan -------------------------------
@@ -598,22 +823,47 @@ return function(mod)
   end
 
   local function findEligibleTiles(map, ow)
-    local tiles = {}
+    local grassTiles = {}
+    local surfTiles = {}
+    local walkableTiles = {}
+
     for y = 0, map.heightCells - 1 do
       for x = 0, map.widthCells - 1 do
-        if map:isGrassCell(x, y) and map:isWalkableCell(x, y)
-            and not (ow.player.cellX == x and ow.player.cellY == y)
-            and not occupiedByAny(ow, x, y) then
-          tiles[#tiles + 1] = { x = x, y = y }
+        if not (ow.player.cellX == x and ow.player.cellY == y) and not occupiedByAny(ow, x, y) then
+          local isGrass = map.isGrassCell and map:isGrassCell(x, y)
+          local isWater = false
+          if map.isWaterCell then
+            isWater = map:isWaterCell(x, y)
+          elseif map.isSurfableCell then
+            isWater = map:isSurfableCell(x, y)
+          elseif map.isWater then
+            isWater = map:isWater(x, y)
+          end
+          local isWalkable = map.isWalkableCell and map:isWalkableCell(x, y)
+
+          if isGrass and isWalkable then
+            grassTiles[#grassTiles + 1] = { x = x, y = y, kind = "grass" }
+          elseif isWater then
+            surfTiles[#surfTiles + 1] = { x = x, y = y, kind = "surf" }
+          elseif isWalkable then
+            walkableTiles[#walkableTiles + 1] = { x = x, y = y, kind = "grass" }
+          end
         end
       end
     end
-    return tiles
+
+    local eligible = {}
+    if #grassTiles > 0 then
+      for _, t in ipairs(grassTiles) do eligible[#eligible + 1] = t end
+    else
+      -- Caves, indoors, or maps with no grass tiles use walkable floor tiles
+      for _, t in ipairs(walkableTiles) do eligible[#eligible + 1] = t end
+    end
+    for _, t in ipairs(surfTiles) do eligible[#eligible + 1] = t end
+
+    return eligible
   end
 
-  -- Fisher-Yates partial shuffle, just enough to pick N distinct tiles
-  -- without biasing toward the scan order (row-major would otherwise
-  -- always favor the top of the map).
   local function pickRandom(list, n)
     local picked = {}
     local pool = {}
@@ -639,55 +889,99 @@ return function(mod)
   end
 
   local function populateMap(mapId)
+    -- TEMPORARY diagnostic (remove with the other [DIAG] block once
+    -- wild_forms compatibility is confirmed live).
+    mod.log:info("galar_gmax_dex: [DIAG] populateMap called for %s, wild_spawns_enabled=%s",
+      tostring(mapId), tostring(mod.options:get("wild_spawns_enabled")))
     if not mod.options:get("wild_spawns_enabled") then return end
     local ow = mod.world:overworld()
-    if not ow or not ow.map or ow.map.id ~= mapId then return end
-    local map = ow.map
-    local grass
-    if isGen2Boot then
-      -- ow.encounters/ow.daytime are real fields on the live Gen 2 World
-      -- instance (the same table World:load reads into
-      -- Game.data.gen2Encounters, and the same daytime World.lua's own
-      -- "world.stepped" payload already exposes).
-      local rate = Gen2Encounter.grassRate(ow.encounters, mapId, ow.daytime)
-      if rate <= 0 then return end
-      grass = true -- gate only; Gen 2's own roll below reads ow.encounters directly, not this
-    else
-      local encDef = Game.data and Game.data.encounters and Game.data.encounters[mapId]
-      grass = encDef and encDef.grass
-      if not grass or not grass.slots or #grass.slots == 0 then return end
+    if not ow or not ow.map or ow.map.id ~= mapId then
+      mod.log:info("galar_gmax_dex: [DIAG] populateMap bailed: ow=%s ow.map=%s ow.map.id=%s vs mapId=%s",
+        tostring(ow ~= nil), tostring(ow and ow.map ~= nil), tostring(ow and ow.map and ow.map.id), tostring(mapId))
+      return
     end
+    local map = ow.map
 
     local eligible = findEligibleTiles(map, ow)
-    if #eligible < MIN_ELIGIBLE_PER_SPAWN then return end
+    mod.log:info("galar_gmax_dex: [DIAG] eligible tiles for %s: %d", tostring(mapId), #eligible)
+    if #eligible < 1 then return end
 
     local target = math.min(maxPerMap(),
-      math.floor(#eligible / MIN_ELIGIBLE_PER_SPAWN))
+      math.max(1, math.floor(#eligible / MIN_ELIGIBLE_PER_SPAWN)))
+    mod.log:info("galar_gmax_dex: [DIAG] target spawn count for %s: %d (maxPerMap=%d, MIN_ELIGIBLE_PER_SPAWN=%d)",
+      tostring(mapId), target, maxPerMap(), MIN_ELIGIBLE_PER_SPAWN)
     if target < 1 then return end
 
-    -- Each tile's spawn attempt is independently pcall'd: the "map.entered"
-    -- event dispatcher already catches an error escaping this whole
-    -- function (src/mods/Events.lua logs and skips a throwing listener),
-    -- but that would abort every remaining tile in this loop too. One bad
-    -- spawn (an unregistered sprite, a stale tile) should not cost the
-    -- other 3.
     local tiles = pickRandom(eligible, target)
     for _, tile in ipairs(tiles) do
       local ok, err = pcall(function()
+        local encounterKind = tile.kind or "grass"
+        local spawnData, source = getSpawnDataForMap(mapId, encounterKind)
+        if not spawnData and encounterKind ~= "grass" then
+          spawnData, source = getSpawnDataForMap(mapId, "grass")
+        end
+        if not spawnData then return end
+        if spawnData.rate and spawnData.rate <= 0 then return end
+
+        local timeOfDay = getTimeOfDay(ow)
         local species, level
-        if isGen2Boot then
-          -- nil random param: Encounter.lua's own internal fallback
-          -- (love.math.random(n) - 1) already normalizes to the 0..n-1
-          -- range its `roll` helper expects -- love.math.random(n) alone
-          -- returns 1..n and would be off by one if passed directly.
-          local picked = Gen2Encounter.grassSlot(ow.encounters, mapId, ow.daytime, nil)
-          species, level = picked and picked.species, picked and picked.level
+
+        -- Step 1: Roll vanilla species/level from the encounter table for this map/kind/time
+        if spawnData.slots and #spawnData.slots > 0 then
+          species, level = rollSlotFromData(spawnData)
+        elseif spawnData.nativeGen2 then
+          species, level = rollGen2NativeEncounter(mapId, encounterKind, timeOfDay)
         else
-          species, level = rollSlot(grass)
+          species, level = rollSlotFromData(spawnData)
         end
         if not (species and level) then return end
-        local spriteId = spriteIdFor[species]
-        if not spriteId then return end
+
+        -- Step 2: Pass through encounter.species -- the exact hook
+        -- wild_forms and gen_2_randomizer_plus both wrap (confirmed from
+        -- their own source). Triggered via Runtime.call, not
+        -- mod.hooks:call -- confirmed live (2026-08-19) that mod.hooks
+        -- exposes :wrap but not :call to mod code; Runtime is the real
+        -- native encounter path's own trigger mechanism (src/world/
+        -- OverworldController.lua) and this mod's own modern_combat.lua
+        -- already proves it's reachable from mod code.
+        do
+          local encDef = { species = species, level = level, kind = encounterKind, mapId = mapId }
+          local ctx = {
+            mapId = mapId,
+            map = ow and ow.map,
+            x = tile.x,
+            y = tile.y,
+            kind = encounterKind,
+            type = encounterKind,
+            encounterKind = encounterKind,
+            timeOfDay = timeOfDay,
+            daytime = timeOfDay,
+            isGen2 = isGen2Boot,
+            isOverworldSpawn = true,
+            overworld = true,
+            ggdWildSpawn = true,
+          }
+          -- Runtime.call(name, vanilla, ...) needs a real function as its
+          -- second argument -- the "nothing else changed it" fallback that
+          -- runs once every wrapper's had a turn -- confirmed against the
+          -- real native call site's own sameEncounter(enc) = enc
+          -- (OverworldController.lua:3765,3779), not guessed.
+          local encRes = Runtime.call("encounter.species", function(e) return e end, encDef, ctx)
+          -- TEMPORARY diagnostic: proves whether the hook is actually
+          -- substituting anything, not just firing without error.
+          local rolledSpecies = species
+          if encRes and type(encRes) == "table" and encRes.species then
+            species = encRes.species
+            level = encRes.level or level
+          end
+          mod.log:info("galar_gmax_dex: [DIAG] encounter.species: rolled=%s -> final=%s (changed=%s)",
+            tostring(rolledSpecies), tostring(species), tostring(rolledSpecies ~= species))
+        end
+        local spriteId = resolveSpeciesId(species)
+        if not spriteId then
+          mod.log:warn("galar_gmax_dex: no sprite for species %q -- skipping overworld spawn", tostring(species))
+          return
+        end
         local objDef = isGen2Boot
           and { sprite = spriteId, x = tile.x, y = tile.y,
                 movement = Gen2NPC.MOVE.WANDER, radius = { x = 2, y = 2 } }
@@ -695,53 +989,22 @@ return function(mod)
                movement = "WALK", range = "ANY_DIR" }
         local npcId, spawnErr = mod.world:spawnNpc(mapId, objDef)
         if not npcId then
-          mod.log:warn("galar_gmax_dex: wild spawn failed for %s: %s",
-            tostring(species), tostring(spawnErr))
+          mod.log:warn("galar_gmax_dex: wild spawn failed for %s (%s): %s",
+            tostring(species), tostring(encounterKind), tostring(spawnErr))
           return
         end
         activeSpawns[npcId] = {
-          mapId = mapId, species = species, level = level,
+          mapId = mapId, species = species, level = level, kind = encounterKind,
         }
-        -- Was per-species (WALKERS_REL .. "/" .. species .. ".png") before
-        -- the shared-placeholder redesign above -- every species' native
-        -- sprite now points at the SAME file, so this pre-filters that
-        -- one path (filteredPaths' own cache makes every call after the
-        -- first a no-op, so this is cheap regardless of call frequency).
         ensureNearestFilter(WALKER_PLACEHOLDER)
         for _, npc in ipairs(ow.npcs or {}) do
           if npc.id == npcId then
-            -- Gen 1 only: applyLosslessDraw replaces npc.draw with a
-            -- 2-arg (camX, camY) function using Gen1's own "subtract
-            -- camera position" convention. Confirmed by direct source
-            -- read that Gen 2's real NPC:draw(ox, oy, scale) is a 3-arg
-            -- method with a DIFFERENT, documented convention (its own
-            -- 2-arg compat shim negates and recurses rather than
-            -- subtracting) -- calling our override with Gen 2's real
-            -- args feeds it the wrong-convention coordinates, which is
-            -- why nothing drew (or drew off-screen). Native draw
-            -- (already correctly wired for every other Gen 2 NPC) using
-            -- the registered walker sprite is the right, already-
-            -- precedented fallback here -- same reasoning this file's
-            -- own header already uses for the Wilds-of-Kanto case
-            -- ("fed our species' art through... the native 16x96/
-            -- frames=6/walker=true contract instead of the legacy
-            -- single-frame scale path").
             if not isGen2Boot then
               mod.exports.applyLosslessDraw(npc, species)
             else
-              -- Marks this instance for the NPC:draw wrap above, which
-              -- draws the same lossless assets/overworld art Gen 1 uses
-              -- (via Gen 2's own correct draw signature/anchor math).
               npc.ggdWildSpawn = true
               npc.ggdSpecies = species
             end
-            -- Explicit user decision: wild spawns no longer block movement
-            -- (Collision.occupied treats passable=true as non-blocking, the
-            -- same field F1's own follower already relies on). Contact
-            -- still starts a battle -- see the proximity-based trigger
-            -- below (Phase 6), which now runs unconditionally instead of
-            -- only under voxel rendering, since Phase 5's own collision
-            -- hook structurally cannot fire once nothing gets blocked.
             npc.passable = true
             break
           end
@@ -754,6 +1017,20 @@ return function(mod)
   end
 
   local currentMapId = nil
+  local getTime = (love.timer and love.timer.getTime) or os.clock
+  local lastRespawnTime = getTime()
+
+  local function checkPeriodicRespawn()
+    if not mod.options:get("wild_spawns_enabled") then return end
+    if not currentMapId then return end
+    local now = getTime()
+    if now - lastRespawnTime >= 10.0 then
+      lastRespawnTime = now
+      despawnMap(currentMapId)
+      populateMap(currentMapId)
+    end
+  end
+
   mod.events:on("map.entered", function()
     local ow = mod.world:overworld()
     local mapId = ow and ow.map and ow.map.id
@@ -761,21 +1038,44 @@ return function(mod)
       despawnMap(currentMapId)
     end
     currentMapId = mapId
-    if mapId then populateMap(mapId) end
+    if mapId then
+      despawnMap(mapId)
+      populateMap(mapId)
+    end
+    lastRespawnTime = getTime()
   end)
 
   -- Flipping "Wild Spawns" in Mod Manager takes effect immediately instead
   -- of waiting for the next map transition -- the whole point of a
   -- test-facing toggle is not having to walk through a door to see it.
+  local function refreshSpawnsNow()
+    if not mod.options:get("wild_spawns_enabled") then return end
+    if currentMapId then
+      despawnMap(currentMapId)
+      populateMap(currentMapId)
+    end
+  end
+
   mod.events:on("mod.options_changed", function(payload)
-    if not (payload and payload.mod == mod.id and payload.key == "wild_spawns_enabled") then
+    if payload and payload.mod == mod.id and payload.key == "wild_spawns_enabled" then
+      if payload.value then
+        refreshSpawnsNow()
+      else
+        if currentMapId then despawnMap(currentMapId) end
+      end
       return
     end
-    if payload.value then
-      if currentMapId then populateMap(currentMapId) end
-    else
-      if currentMapId then despawnMap(currentMapId) end
-    end
+
+    -- Re-evaluate and refresh overworld spawns when external mods (e.g. gen_2_randomizer_plus) change options
+    refreshSpawnsNow()
+  end)
+
+  mod.events:on("mods.loaded", function()
+    refreshSpawnsNow()
+  end)
+
+  mod.events:on("save.loaded", function()
+    refreshSpawnsNow()
   end)
 
   -- ------- Phase 5: contact -> battle ---------------------------------
@@ -994,12 +1294,11 @@ return function(mod)
   -- Also no longer voxel-gated, for the same passable-spawns reason above.
   mod.events:on("world.stepped", function(payload)
     local ok = pcall(function()
+      checkPeriodicRespawn()
       if not payload then return end
       local ow = mod.world:overworld()
       if not (ow and ow.player and ow.map) then return end
       if ow.map.id ~= payload.mapId then return end
-      -- payload.x/y are cells (world.stepped's own payload shape); convert
-      -- to the same pixel-center space triggerAdjacentVoxelSpawn now uses.
       triggerAdjacentVoxelSpawn(ow, payload.mapId,
         (payload.x or 0) * 16 + 8, (payload.y or 0) * 16 + 8)
     end)

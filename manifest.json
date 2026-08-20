@@ -1,18 +1,24 @@
 {
   "id": "g9-battle-engine",
-  "name": "Gen 9 Battle Engine",
-  "version": "1.2.0",
-  "entry": "main.lua",
+  "name": "g9-battle-engine-test",
+  "version": "0.2.7",
   "api": 2,
-  "game_version": ">=0.1.45",
-  "priority": 100,
+  "entry": "main.lua",
   "profile": "content",
+  "game_version": ">=0.1.45",
+  "games": [
+    "gen2"
+  ],
   "category": "GAMEPLAY",
-  "repo": "https://github.com/tectorifter/Gen9Dex",
-  "games": ["gen2"],
-  "permissions": ["engine_internals"],
-  "options_schema": "options.lua",
-  "dependencies": ["national_dex"],
+  "priority": 95,
+  "permissions": [
+    "engine_internals"
+  ],
+  "dependencies": [
+    "national_dex"
+  ],
   "optional_dependencies": [],
-  "description": "4 gimmicks, updated battle engine, overworld encounters, followers, alphamon ."
+  "description": "4 gimmicks, updated battle engine, overworld encounters, followers, alphamon .",
+  "options_schema": "options.lua",
+  "repo": "https://github.com/tectorifter/Gen9Dex"
 }

@@ -1,4 +1,4 @@
-﻿-- Galar Gigantamax Dex -- Phases 1-4: species/evolutions/typing, movepool,
+-- Galar Gigantamax Dex -- Phases 1-4: species/evolutions/typing, movepool,
 -- Gigantamax moves/forms, and full animated battle sprites.
 --
 -- Phase 1 registers every species national_dex reports (the base-stat/
@@ -528,8 +528,21 @@ end
 -- again on save.loaded.
 local FRAME_DURATION_MS = 100
 
+-- Flat one-file-per-species/form convention (assets/front|back/<ID>.png),
+-- matching the base engine's own sanctioned single-static-file schema
+-- (spriteFront/spriteBack, no frame count field -- confirmed against
+-- src/mods/Schemas.lua's pokemon schema and national_dex's own
+-- mod.assets:path-anchored placeholder art). Replaces the old folder-
+-- per-species/numbered-animation-frame convention
+-- (assets/front|back/<ID>/NNN.png) this mod invented on top of that
+-- schema -- the `frame` parameter is kept (installSpriteAnimation still
+-- calls this through framePath) but has no effect now that every
+-- species resolves to exactly one real frame; frameCounts below is
+-- always {front=1, back=1}, so installSpriteAnimation's own
+-- total > 1 gate means it never actually calls this with anything but
+-- frame=1 in practice.
 local function builtinFramePath(mod, side, speciesId, frame)
-  return mod.path .. "/assets/" .. side .. "/" .. speciesId .. ("/%03d.png"):format(frame)
+  return mod.path .. "/assets/" .. side .. "/" .. speciesId .. ".png"
 end
 
 -- GalarGmaxDex owns sprite sizing outright: every species loads at a flat
@@ -555,22 +568,23 @@ end
 -- owns the resting size; dynamax owns growing and shrinking it.
 local BASE_SPRITE_SCALE = 0.7
 
-local function installSpriteAssetPacks(mod, spritePackRosterFull, frameCounts, nativeVanillaSpecies)
+local function installSpriteAssetPacks(mod, spritePackRosterFull, nativeVanillaSpecies)
   local packs = {}
   local isNativeVanilla = {}
   for _, id in ipairs(nativeVanillaSpecies or {}) do isNativeVanilla[id] = true end
   local activePackId = "sliced_v1"
 
+  -- Real existence (not "did we generate a frame-count entry for this id
+  -- once") is checked downstream by resolve()/spriteFileExists -- always
+  -- returning a candidate here, for any id, is safe and correct.
   packs.sliced_v1 = function(speciesId)
-    local counts = frameCounts[speciesId]
-    if not counts then return nil end
     return {
       spriteFront = builtinFramePath(mod, "front", speciesId, 1),
       spriteBack = builtinFramePath(mod, "back", speciesId, 1),
       frontSize = 7,
       battleScaleFront = BASE_SPRITE_SCALE,
       battleScaleBack = BASE_SPRITE_SCALE,
-      frameCounts = counts,
+      frameCounts = { front = 1, back = 1 },
       framePath = function(side, frame) return builtinFramePath(mod, side, speciesId, frame) end,
     }
   end
@@ -775,7 +789,17 @@ local function installSpriteAssetPacks(mod, spritePackRosterFull, frameCounts, n
   end
 
   local patched = mod.exports.reapplySpritePacks()
-  mod.events:on("save.loaded", function() mod.exports.reapplySpritePacks() end)
+  -- TEMPORARILY DISABLED (2026-08-19, spawn-diagnostic session): both
+  -- listeners below call mod.content.pokemon:patch(...), which throws
+  -- "content is frozen after load" (src/mods/Registry.lua:33) every time
+  -- save.loaded/mod.options_changed fires post-boot -- confirmed live in
+  -- the actual game log, real and unrelated to the spawn-hook diagnosis
+  -- in progress. Disabled here only to stop the resulting log noise/churn
+  -- from interfering with reading the spawn diagnostics -- re-enable
+  -- (restore the two mod.events:on calls below) once spawn compatibility
+  -- is confirmed working; this frozen-registry bug still needs its own
+  -- real fix afterward, not forgotten.
+  -- mod.events:on("save.loaded", function() mod.exports.reapplySpritePacks() end)
   -- DRAMATIC_SHAPE's own 3D-BTL row is changeable mid-session (its
   -- OverworldBattle.lua notes it's "reachable from the mod manager's page
   -- mid-session"), so the classic-mode scale picked above can go stale
@@ -786,7 +810,7 @@ local function installSpriteAssetPacks(mod, spritePackRosterFull, frameCounts, n
   -- cheap enough (one registry patch per registered species -- this used
   -- to mean 51, now the full national_dex catalogue, still a one-off pass
   -- over plain table lookups, not per-frame work).
-  mod.events:on("mod.options_changed", function() mod.exports.reapplySpritePacks() end)
+  -- mod.events:on("mod.options_changed", function() mod.exports.reapplySpritePacks() end)
   return patched
 end
 
@@ -1880,6 +1904,9 @@ local function installDebugOptions(mod)
   mod.options:define(schema)
 
   mod.hooks:wrap("encounter.roll", function(next, encDef, ctx)
+    if ctx and (ctx.isOverworldSpawn or ctx.overworld or ctx.ggdWildSpawn) then
+      return next(encDef, ctx)
+    end
     if mod.options:get("classic_encounters") then
       return next(encDef, ctx)
     end
@@ -2143,8 +2170,13 @@ return function(mod)
   local installLearnsetOwnership = loadSibling(mod, "combat/learnset_ownership.lua")
   local learnsetOwnership = installLearnsetOwnership(mod, movesData)
   learnsetOwnership.reapplyLearnsets()
-  mod.events:on("save.loaded", learnsetOwnership.reapplyLearnsets)
-  mod.events:on("mod.options_changed", learnsetOwnership.reapplyLearnsets)
+  -- TEMPORARILY DISABLED (2026-08-19, spawn-diagnostic session): same
+  -- "content is frozen after load" crash as reapplySpritePacks above --
+  -- reapplyLearnsets also calls mod.content.pokemon:patch(...) from a
+  -- post-boot event. Disabled to stop log noise while diagnosing spawn
+  -- hook compatibility; re-enable afterward, real fix still needed.
+  -- mod.events:on("save.loaded", learnsetOwnership.reapplyLearnsets)
+  -- mod.events:on("mod.options_changed", learnsetOwnership.reapplyLearnsets)
 
   mod.log:info("galar_gmax_dex: registered %d new moves (Phase 2)", movesRegistered)
 
@@ -2161,9 +2193,13 @@ return function(mod)
     gmaxMovesRegistered, #gmaxData.order, #gmaxData.order)
 
   -- ------- Phase 4: battle sprites -------
-  local frameCounts = loadSibling(mod, "overworld/sprite_frames_full.lua")
+  -- overworld/sprite_frames_full.lua (the old per-species animation-frame
+  -- count table) is no longer loaded here: assets/front|back/ are now one
+  -- flat, single-frame file per species/form (see builtinFramePath), so
+  -- every species uniformly gets frameCounts = {front=1, back=1} inside
+  -- installSpriteAssetPacks itself.
   local playerSpriteSide = installPlayerSpriteSide(mod)
-  local spritesPatched = installSpriteAssetPacks(mod, spritePackRosterFull, frameCounts, nativeVanillaSpecies)
+  local spritesPatched = installSpriteAssetPacks(mod, spritePackRosterFull, nativeVanillaSpecies)
   installRestingScaleOverride(mod, spritePackRosterFull, BASE_SPRITE_SCALE)
   installGen2BattlePicPositionFix(mod, spritePackRosterFull)
   installSpriteAnimation(mod, playerSpriteSide)

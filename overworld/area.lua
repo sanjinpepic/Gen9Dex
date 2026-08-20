@@ -30,40 +30,90 @@
 -- loads last silently wins for any map they both touch.
 
 return function(mod)
-  -- =====================================================================
-  -- Gen 2 (Johto): starting template for this file's own separate Gen 2
-  -- area-placement content -- explicit user decision that Gen 2 needs
-  -- its own data, not Kanto map ids reapplied (the Gen 1 body below is
-  -- guarded off from ever running under a Gen 2 boot for exactly that
-  -- reason -- its map ids don't exist in Johto, and more importantly its
-  -- patch SHAPE doesn't validate against Gen 2's registry at all, see
-  -- below). Route 29 only for now (the first route, New Bark Town ->
-  -- Cherrygrove City) -- not a full Johto route list yet.
-  --
-  -- Gen 2's real registry shape is confirmed completely different from
-  -- Gen 1's this session: keyed by encounter KIND first ("grass"/
-  -- "water"/...), then map id, with per-time-of-day (MORN/DAY/NITE)
-  -- rate/slot tables -- src/mods/Schemas.lua's own gen2Keys/gen2GrassRow,
-  -- whose own documented example is literally
-  -- `mod.content.encounters:patch("grass", { ROUTE_29 = { rates = {
-  -- NITE = 40 } } })` -- confirming both the field names (rates/slots)
-  -- and ROUTE_29 as the map id key, not something guessed here. Slot
-  -- percentages (30/30/20/10/5/4/1) are Gen 2's real fixed ladder
-  -- (src/battle/gen2/Encounter.lua's own GRASS_SLOT_CHANCES), not
-  -- invented.
-  --
-  -- Species/level/rate values below are APPROXIMATED from commonly
-  -- documented Gen 2 (Gold) encounter data, not extracted from the ROM
-  -- cache directly -- flagged honestly, unlike the Gen 1 tables below
-  -- this point, which really are copied verbatim from a source mod.
-  -- Sentret/Pidgey/Rattata by day, Hoothoot replacing Sentret's slots at
-  -- night, is the well-documented shape of Route 29's real day/night
-  -- split; exact per-slot levels/rate byte are a reasonable approximation
-  -- pending verification against the real cartridge data.
-  -- =====================================================================
+  if not mod.options:get("use_base_area_tables") then
+    mod.log:info("galar_gmax_dex: base area placement tables disabled (allowing external mod spawn tables)")
+    return
+  end
+
+  local spawnData = {
+    grass = {},
+    surf = {},
+    water = {},
+  }
+
+  local function publishProvider()
+    mod.exports.overworldSpawnProvider = {
+      apiVersion = 1,
+      id = mod.id,
+      get = function(mapId, encounterKind, timeOfDay)
+        encounterKind = encounterKind or "grass"
+        local kindTable = spawnData[encounterKind]
+        if not kindTable then return nil end
+        local mapDef = kindTable[mapId]
+        if not mapDef then return nil end
+
+        if mapDef.slots then
+          local slotsForTime = timeOfDay and mapDef.slots[timeOfDay]
+          if not slotsForTime and type(mapDef.slots) == "table" and not mapDef.slots[1] then
+            slotsForTime = mapDef.slots["DAY"] or mapDef.slots["MORN"] or mapDef.slots["NITE"]
+          end
+          if slotsForTime then
+            local rate = mapDef.rates and timeOfDay and mapDef.rates[timeOfDay]
+              or (mapDef.rates and (mapDef.rates.DAY or mapDef.rates.MORN or mapDef.rates.NITE))
+              or 25
+            return { rate = rate, slots = slotsForTime }
+          elseif mapDef.slots[1] then
+            local rate = mapDef.rate or 25
+            return { rate = rate, slots = mapDef.slots, buckets = mapDef.buckets }
+          end
+        end
+        return nil
+      end,
+    }
+  end
+
+  -- Compatibility merge for Gen 2's kind-first encounters shape
+  -- (explicit user decision: "merge but we keep the on/off toggle for it
+  -- as is"). Confirmed via the registry schema's own header (Schemas.lua
+  -- R.encounters): Gold has no per-map record to key the registry by, so
+  -- the registry id IS the kind ("surf"/"grass") and the patch value is
+  -- itself a per-map table nested inside it -- meaning two different
+  -- mods can both legitimately patch "grass" for two different routes,
+  -- and a plain owners[id]-based defer (right for Kanto's one-id-per-map
+  -- shape above) would be too coarse here: it would throw away OUR
+  -- entire route set just because some other mod touched "grass" for a
+  -- single unrelated route. Real per-map data lives only in mod-op
+  -- values under this registry for Gen 2 (Gold's actual vanilla wild
+  -- table is a completely separate ROM-derived structure this registry
+  -- never sees -- confirmed: overworld_spawns.lua's own native fallback
+  -- reads ow.encounters directly, never mod.content.encounters, for Gen
+  -- 2), so :get(kind) before this file's own patch reflects only earlier
+  -- mods' contributions -- any route key already present there is
+  -- unambiguously someone else's, not vanilla. Only routes NOT already
+  -- present get folded into this file's own patch; anything another mod
+  -- already placed survives untouched.
+  local function mergeKindPatch(kind, byRoute)
+    local current = mod.content.encounters:get(kind)
+    local toAdd, skipped = {}, {}
+    for routeId, def in pairs(byRoute) do
+      if current and current[routeId] then
+        skipped[#skipped + 1] = routeId
+      else
+        toAdd[routeId] = def
+      end
+    end
+    if #skipped > 0 then
+      mod.log:info("galar_gmax_dex: base area tables: %s already has %d route(s) from another mod -- deferring on those, adding the rest",
+        kind, #skipped)
+    end
+    if next(toAdd) then
+      mod.content.encounters:patch(kind, toAdd)
+    end
+  end
+
   local GameVersion = require("src.core.GameVersion")
   if GameVersion.generation(GameVersion.get()) == 2 then
-    mod.content.encounters:patch("surf", {
+    local gen2Surf = {
       ROUTE_31 = {
         rates = { MORN = 25, DAY = 25, NITE = 25 },
         slots = {
@@ -78,8 +128,11 @@ return function(mod)
           },
         }
       }
-    }),
-    mod.content.encounters:patch("grass", {
+    }
+    mergeKindPatch("surf", gen2Surf)
+    spawnData.surf = gen2Surf
+
+    local gen2Grass = {
       ROUTE_46 = {
         rates = { MORN = 25, DAY = 25, NITE = 25 },
         slots = {
@@ -804,12 +857,47 @@ return function(mod)
           },
         },
       },
-    })
-    mod.log:info("galar_gmax_dex: gen 2 area placements installed (Route 29 only, starting template)")
+    }
+    mergeKindPatch("grass", gen2Grass)
+    spawnData.grass = gen2Grass
+    publishProvider()
+    mod.log:info("galar_gmax_dex: gen 2 area placements installed & spawn provider published")
     return
   end
 
-  mod.content.encounters:patch("VIRIDIAN_FOREST", {
+  -- Compatibility merge (explicit user decision: "merge but we keep the
+  -- on/off toggle for it as is"). Record-semantics :patch() deep-merges
+  -- key/value fields but replaces an array field (slots) wholesale --
+  -- confirmed via src/mods/Merge.lua, this file's own header already
+  -- noted it -- so blindly patching every Kanto map here would silently
+  -- discard any earlier-loaded mod's own edit to that same map's table.
+  -- Registry.lua's own owners[id] (last-writing owner) is set only by a
+  -- real op (register/override/patch); vanilla ROM data lives in a
+  -- separate base() function and is never recorded as an op, so
+  -- owners[mapId] being set BEFORE this call means some other mod
+  -- already customized this exact map -- defer to them rather than
+  -- overwrite. A true slot-by-slot merge of two full weighted 10-slot
+  -- tables has no unambiguous semantic (whose weight wins slot 3?), so
+  -- "defer entirely to whoever got there first" is the honest reading of
+  -- "merge" this data shape actually allows -- not a silent narrowing,
+  -- the only well-defined answer available.
+  local function patchEncounter(mapId, encDef)
+    local owners = mod.content.encounters.owners
+    local existingOwner = owners and owners[mapId]
+    if existingOwner and existingOwner ~= mod.id then
+      mod.log:info("galar_gmax_dex: base area tables: %s already patched by '%s' -- deferring, not overwriting",
+        tostring(mapId), tostring(existingOwner))
+      return
+    end
+    mod.content.encounters:patch(mapId, encDef)
+    if encDef then
+      if encDef.grass then spawnData.grass[mapId] = encDef.grass end
+      if encDef.water then spawnData.water[mapId] = encDef.water end
+      if encDef.surf then spawnData.surf[mapId] = encDef.surf end
+    end
+  end
+
+  patchEncounter("VIRIDIAN_FOREST", {
     grass = {
       slots = {
         { level = 3, species = "CATERPIE" },  -- 20%
@@ -831,7 +919,7 @@ return function(mod)
     },
   })
 
-  mod.content.encounters:patch("ROUTE_2", {
+  patchEncounter("ROUTE_2", {
     grass = {
       slots = {
         { level = 6, species = "IMPIDIMP " },      -- 20%
@@ -855,7 +943,7 @@ return function(mod)
 
   -- Deliberate exception: ROUTE_3 is ours, not the source mod's vanilla-
   -- completion table -- a single-species URSHIFU table instead.
-  mod.content.encounters:patch("ROUTE_3", {
+  patchEncounter("ROUTE_3", {
     grass = {
       slots = {
         { level = 6, species = "URSHIFU" },
@@ -872,7 +960,7 @@ return function(mod)
     },
   })
 
-  mod.content.encounters:patch("ROUTE_4", {
+  patchEncounter("ROUTE_4", {
     grass = {
       slots = {
         { level = 8, species = "RATTATA" },   -- 20%
@@ -893,7 +981,7 @@ return function(mod)
     },
   })
 
-  mod.content.encounters:patch("ROUTE_5", {
+  patchEncounter("ROUTE_5", {
     grass = {
       slots = {
         { level = 13, species = "PIDGEY" },      -- 20%
@@ -914,7 +1002,7 @@ return function(mod)
     },
   })
 
-  mod.content.encounters:patch("ROUTE_6", {
+  patchEncounter("ROUTE_6", {
     grass = {
       slots = {
         { level = 13, species = "PIDGEY" },      -- 20%
@@ -935,7 +1023,7 @@ return function(mod)
     },
   })
 
-  mod.content.encounters:patch("ROUTE_7", {
+  patchEncounter("ROUTE_7", {
     grass = {
       slots = {
         { level = 19, species = "PIDGEY" },      -- 20%
@@ -956,7 +1044,7 @@ return function(mod)
     },
   })
 
-  mod.content.encounters:patch("ROUTE_8", {
+  patchEncounter("ROUTE_8", {
     grass = {
       slots = {
         { level = 18, species = "PIDGEY" },      -- 20%
@@ -977,7 +1065,7 @@ return function(mod)
     },
   })
 
-  mod.content.encounters:patch("ROUTE_9", {
+  patchEncounter("ROUTE_9", {
     grass = {
       slots = {
         { level = 16, species = "RATTATA" },    -- 20%
@@ -998,7 +1086,7 @@ return function(mod)
     },
   })
 
-  mod.content.encounters:patch("ROUTE_11", {
+  patchEncounter("ROUTE_11", {
     grass = {
       slots = {
         { level = 15, species = "DROWZEE" },     -- 20%
@@ -1021,7 +1109,7 @@ return function(mod)
     },
   })
 
-  mod.content.encounters:patch("ROUTE_12", {
+  patchEncounter("ROUTE_12", {
     grass = {
       slots = {
         { level = 23, species = "PIDGEY" },       -- 20%
@@ -1042,7 +1130,7 @@ return function(mod)
     },
   })
 
-  mod.content.encounters:patch("ROUTE_13", {
+  patchEncounter("ROUTE_13", {
     grass = {
       slots = {
         { level = 22, species = "VENONAT" },      -- 20%
@@ -1064,7 +1152,7 @@ return function(mod)
     },
   })
 
-  mod.content.encounters:patch("ROUTE_14", {
+  patchEncounter("ROUTE_14", {
     grass = {
       slots = {
         { level = 24, species = "VENONAT" },      -- 20%
@@ -1085,7 +1173,7 @@ return function(mod)
     },
   })
 
-  mod.content.encounters:patch("ROUTE_15", {
+  patchEncounter("ROUTE_15", {
     grass = {
       slots = {
         { level = 26, species = "PIDGEOTTO" },    -- 20%
@@ -1106,7 +1194,7 @@ return function(mod)
     },
   })
 
-  mod.content.encounters:patch("ROUTE_21", {
+  patchEncounter("ROUTE_21", {
     grass = {
       slots = {
         { level = 21, species = "RATTATA" },    -- 20%
@@ -1127,7 +1215,7 @@ return function(mod)
     },
   })
 
-  mod.content.encounters:patch("ROUTE_23", {
+  patchEncounter("ROUTE_23", {
     grass = {
       slots = {
         { level = 26, species = "SPEAROW" },     -- 20%
@@ -1148,7 +1236,7 @@ return function(mod)
     },
   })
 
-  mod.content.encounters:patch("ROUTE_24", {
+  patchEncounter("ROUTE_24", {
     grass = {
       slots = {
         { level = 8, species = "CATERPIE" },      -- 20%
@@ -1169,7 +1257,7 @@ return function(mod)
     },
   })
 
-  mod.content.encounters:patch("ROUTE_25", {
+  patchEncounter("ROUTE_25", {
     grass = {
       slots = {
         { level = 12, species = "PIDGEY" },       -- 20%
@@ -1190,7 +1278,7 @@ return function(mod)
     },
   })
 
-  mod.content.encounters:patch("ROUTE_22", {
+  patchEncounter("ROUTE_22", {
     grass = {
       slots = {
         { level = 6, species = "PSYDUCK" },    -- 20%
@@ -1211,7 +1299,7 @@ return function(mod)
     },
   })
 
-  mod.content.encounters:patch("SAFARI_ZONE_CENTER", {
+  patchEncounter("SAFARI_ZONE_CENTER", {
     grass = {
       slots = {
         { level = 22, species = "NIDORAN_M" },  -- 20%
@@ -1234,7 +1322,7 @@ return function(mod)
     },
   })
 
-  mod.content.encounters:patch("SAFARI_ZONE_EAST", {
+  patchEncounter("SAFARI_ZONE_EAST", {
     grass = {
       slots = {
         { level = 22, species = "NIDORAN_F" },   -- 20%
@@ -1258,7 +1346,7 @@ return function(mod)
     },
   })
 
-  mod.content.encounters:patch("SAFARI_ZONE_WEST", {
+  patchEncounter("SAFARI_ZONE_WEST", {
     grass = {
       slots = {
         { level = 25, species = "NIDORAN_M" },   -- 20%
@@ -1280,7 +1368,7 @@ return function(mod)
     },
   })
 
-  mod.content.encounters:patch("SAFARI_ZONE_NORTH", {
+  patchEncounter("SAFARI_ZONE_NORTH", {
     grass = {
       slots = {
         { level = 22, species = "NIDORAN_M" },   -- 20%
@@ -1301,7 +1389,7 @@ return function(mod)
     },
   })
 
-  mod.content.encounters:patch("SEAFOAM_ISLANDS_B2F", {
+  patchEncounter("SEAFOAM_ISLANDS_B2F", {
     grass = {
       slots = {
         { level = 30, species = "SEEL" },       -- 20%
@@ -1324,7 +1412,7 @@ return function(mod)
     },
   })
 
-  mod.content.encounters:patch("SEAFOAM_ISLANDS_B3F", {
+  patchEncounter("SEAFOAM_ISLANDS_B3F", {
     grass = {
       slots = {
         { level = 31, species = "SLOWPOKE" },   -- 20%
@@ -1345,7 +1433,7 @@ return function(mod)
     },
   })
 
-  mod.content.encounters:patch("SEAFOAM_ISLANDS_B4F", {
+  patchEncounter("SEAFOAM_ISLANDS_B4F", {
     grass = {
       slots = {
         { level = 31, species = "HORSEA" },      -- 20%
@@ -1366,7 +1454,7 @@ return function(mod)
     },
   })
 
-  mod.content.encounters:patch("VICTORY_ROAD_1F", {
+  patchEncounter("VICTORY_ROAD_1F", {
     grass = {
       slots = {
         { level = 43, species = "MAROWAK" },     -- 20%
@@ -1389,7 +1477,7 @@ return function(mod)
     },
   })
 
-  mod.content.encounters:patch("VICTORY_ROAD_2F", {
+  patchEncounter("VICTORY_ROAD_2F", {
     grass = {
       slots = {
         { level = 22, species = "MACHOP" },      -- 20%
@@ -1412,7 +1500,7 @@ return function(mod)
     },
   })
 
-  mod.content.encounters:patch("VICTORY_ROAD_3F", {
+  patchEncounter("VICTORY_ROAD_3F", {
     grass = {
       slots = {
         { level = 24, species = "MACHOP" },       -- 20%
@@ -1436,7 +1524,7 @@ return function(mod)
     },
   })
 
-  mod.content.encounters:patch("POKEMON_MANSION_B1F", {
+  patchEncounter("POKEMON_MANSION_B1F", {
     grass = {
       slots = {
         { level = 31, species = "KOFFING" },    -- 20%
@@ -1460,7 +1548,7 @@ return function(mod)
     },
   })
 
-  mod.content.encounters:patch("CERULEAN_CAVE_1F", {
+  patchEncounter("CERULEAN_CAVE_1F", {
     grass = {
       rate = 10,
       slots = {
@@ -1484,7 +1572,7 @@ return function(mod)
     },
   })
 
-  mod.content.encounters:patch("CERULEAN_CAVE_2F", {
+  patchEncounter("CERULEAN_CAVE_2F", {
     grass = {
       rate = 15,
       slots = {
@@ -1508,7 +1596,7 @@ return function(mod)
     },
   })
 
-  mod.content.encounters:patch("CERULEAN_CAVE_B1F", {
+  patchEncounter("CERULEAN_CAVE_B1F", {
     grass = {
       rate = 25,
       slots = {
@@ -1533,7 +1621,7 @@ return function(mod)
     },
   })
 
-  mod.content.encounters:patch("POWER_PLANT", {
+  patchEncounter("POWER_PLANT", {
     grass = {
       slots = {
         { level = 21, species = "VOLTORB" },
@@ -1554,5 +1642,6 @@ return function(mod)
     },
   })
 
-  mod.log:info("galar_gmax_dex: area encounter tables installed (Phase 6)")
+  publishProvider()
+  mod.log:info("galar_gmax_dex: area encounter tables & spawn provider installed (Phase 6)")
 end

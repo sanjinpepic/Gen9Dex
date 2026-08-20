@@ -48,6 +48,13 @@ return {
     description = "Show visible wild Pokemon walking in grass (W1 native engine). Battle triggers on contact.",
   },
   {
+    key = "use_base_area_tables",
+    label = "Base Area Tables",
+    type = "toggle",
+    default = false,
+    description = "Use GalarGmaxDex's built-in area spawn tables. OFF by default to allow custom spawn tables from other mods to take effect.",
+  },
+  {
     key = "classic_encounters",
     label = "Classic Enc",
     type = "toggle",
