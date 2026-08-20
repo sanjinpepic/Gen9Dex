@@ -6,7 +6,7 @@ return {
   tags = { "content", "gen2" },
   differences = {
     changed = {
-      "More efficient and organical overworld spawning, 10 seconds despawn/respawn, reduction of unneeded assets, better asset management",
+      "Updated bad asset load that produced crash on overworld encounters and followers asset loading",
     },
     added = {
       "Full Modern combat engine with move sub effects, four generational gimmicks, sprite loading for combat and overworld assets",

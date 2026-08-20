@@ -1,7 +1,7 @@
 {
   "id": "g9-battle-engine",
   "name": "g9-battle-engine-test",
-  "version": "0.2.7",
+  "version": "1.2.3",
   "api": 2,
   "entry": "main.lua",
   "profile": "content",
