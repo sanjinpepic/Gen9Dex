@@ -3,62 +3,82 @@
 -- Screen flavor text exists; Gen 1's original ROM never had Protect at all,
 -- it was introduced Gen 2).
 --
+-- Gen-2-only file (this mod's own manifest declares "games": {"gen2"}), so
+-- everything here targets gen2/Battle.lua's own API directly rather than
+-- Gen 1's BattleState/EffectRegistry -- a real, confirmed bug this file
+-- previously had: it was built entirely against the Gen 1 shape
+-- (move_effects records with a `perform(ctx)` field, kind = "full",
+-- BattleState.performMove) despite never running under anything but Gen 2.
+-- Confirmed by direct read of gen2/Battle.lua:1533-1538 -- the only
+-- dispatch site for a move's registered effect record reads
+-- `effectRecord.run`, called positionally as
+-- `run(self, attacker, defender, def, moveId, sureHit)` -- never
+-- `.perform`, which the move_effects schema (src/mods/Schemas.lua:1280-
+-- 1288) doesn't even define as a field. So every `perform` handler this
+-- file registered was silently never invoked in an actual game: PROTECT/
+-- DETECT/BATTLE_FORMS_MAXGUARD's own effect always resolved to nothing
+-- callable and fell straight through the damage-less path (their power is
+-- 0), which is exactly the reported symptom -- no flag ever set, no
+-- message, Part B's battle.damage hook always saw an unprotected target.
+--
 -- Part A: PROTECT already exists in this mod's own data
 -- (GalarGmaxDex/moves_new.lua, priority = 4, correct already) as a
 -- documented no-op (effect = "NO_ADDITIONAL_EFFECT", functionCode =
 -- "ProtectUser" -- functionCode is dead documentation, grepped: nothing in
 -- the core engine ever reads it). Registered here as a real move_effects
--- record and patched onto PROTECT -- the same pattern main.lua's
--- installMovepoolEffects already uses for GALAR_FLINCH_EFFECT_*/
--- GALAR_CONFUSE_EFFECT_*/GALAR_TRAP_EFFECT, not a new mechanism. Effect
--- records are keyed by move id, so this applies identically in wild,
--- trainer, and link battles with no extra wiring -- and any future
--- Detect/Endure/Spiky Shield/Baneful Bunker/King's Shield can point their
--- own `effect` field at this exact same id (they're mechanically identical
--- decay chains in every real generation).
+-- record (kind = "primary", a `run` handler in Gen 2's own calling
+-- convention -- the same shape modern_hazards.lua's GALAR_STEALTHROCK_
+-- EFFECT/GALAR_TOXICSPIKES_EFFECT already use successfully) and patched
+-- onto PROTECT. Effect records are keyed by move id, so this applies
+-- identically in wild, trainer, and link battles with no extra wiring --
+-- and any future Detect/Endure/Spiky Shield/Baneful Bunker/King's Shield
+-- can point their own `effect` field at this exact same id (they're
+-- mechanically identical decay chains in every real generation).
+--
+-- Success-chance formula deliberately stays the modern Showdown "stall"
+-- decay (1/3 per consecutive use, capped 1/729) rather than switching to
+-- Gen 2's own native halving chain (Effects.protectSucceeds, the formula
+-- Battle.MOVE_EFFECTS.EFFECT_PROTECT already uses natively) -- an earlier,
+-- separate, already-explained design choice this fix doesn't revisit; only
+-- the dispatch/messaging plumbing was actually broken.
 --
 -- Part B: blocking an INCOMING damaging move against a protected target.
 --
--- Deliberately does NOT monkey-patch BattleState.performMove to block
--- before the move even runs: performMove decrements PP and announces
--- "X used Y!" near its own top, BEFORE any effect dispatch -- blocking
--- there entirely would give the attacker their move back for free (no PP
--- cost, no announcement), which is wrong; a Protect-blocked move still
--- costs PP and still gets announced in every real generation.
---
--- Instead this wraps battle.damage (the same hook modern_combat.lua
--- already uses) at a HIGHER priority, so it runs first in the chain and
--- can short-circuit straight to typeMult = 0 without ever calling next()
--- -- reusing EffectRegistry.lua's own existing, already-correct handling
--- for that exact value (confirmed by reading it directly, EffectRegistry
--- .lua:187-191): `if info.typeMult == 0 then ... "It doesn't affect
--- %s!" ... end`. Same code path a type immunity already uses, so no new
--- message logic is needed here at all -- PP/animation/announcement all
--- run completely normally through the untouched native performMove, and
--- only the damage number comes back zeroed.
+-- Wraps battle.damage (the same hook modern_combat.lua already uses) at a
+-- HIGHER priority, so it runs first in the chain and can short-circuit
+-- straight to typeMult = 0 without ever calling next() -- reusing Gen 2's
+-- own existing, already-correct handling for that exact value (confirmed
+-- by direct read, gen2/Battle.lua:1124-1140:
+-- `normalizeDamageInfo` maps `typeMult` onto `info.effectiveness`, and
+-- `if info.effectiveness == 0 then ... "It doesn't affect %s..." ... end`
+-- short-circuits before dealDamage is ever called). Same code path a type
+-- immunity already uses, so no new message logic is needed here at all --
+-- PP/animation/announcement all run completely normally through the
+-- untouched native useMove, and only the damage number comes back zeroed.
 --
 -- Part D: blocking an INCOMING pure status move (Thunder Wave, Toxic, a
 -- stat-lowering move) against a protected target -- these never call
--- computeDamage at all, so Part B's battle.damage hook never sees them.
--- No hook exists for "a primary status effect is about to run" the way
--- battle.damage does for damage, so this needs a performMove wrap after
--- all -- but NOT the naive "block before native runs at all" version:
--- that would skip PP decrement and the "X used Y!" announcement, giving
--- the attacker their move back for free, which is wrong (a Protect-
--- blocked move still costs PP and still gets announced in every real
--- generation, exactly like Part B's reasoning for damaging moves).
+-- hitOnce/battle.damage at all, so Part B's hook never sees them. No hook
+-- exists for "a primary status effect is about to run" the way
+-- battle.damage does for damage, so this wraps Battle:useMove itself --
+-- but NOT the naive "block before native runs at all" version: that would
+-- skip PP decrement and the "X used Y!" announcement, giving the attacker
+-- their move back for free, which is wrong (a Protect-blocked move still
+-- costs PP and still gets announced in every real generation, exactly
+-- like Part B's reasoning for damaging moves).
 --
 -- Instead, when the block condition is met, this temporarily swaps
--- self.effectRecord (BattleState.lua:2205's own tiny lookup method) for
--- the single native performMove call, substituting a "doesn't affect"
--- stand-in record -- same kind/accuracyChecked shape as the real one, so
--- native's PP/announcement/accuracy-roll logic (BattleState.lua:3433-
--- 3579) runs completely unmodified and unduplicated, and only the
--- record.run(ctx) that would have applied the real effect is swapped
--- out. Restored immediately after, even on error.
+-- Battle.moveEffectRecordFor (gen2/Battle.lua:2703's own lookup function,
+-- a plain function on the class table, not per-instance -- the same
+-- monkeypatch shape modern_hazards.lua's own header cites this file as
+-- having established) for the single native useMove call, substituting a
+-- "doesn't affect" stand-in record -- so native's PP/announcement/
+-- accuracy-roll logic (useMove's own top half) runs completely unmodified
+-- and unduplicated, and only the real record.run(...) that would have
+-- applied the effect is swapped out. Restored immediately after, even on
+-- error.
 return function(mod)
-  local BattleState = require("src.battle.BattleState")
-  local EffectRegistry = require("src.battle.EffectRegistry")
+  local Battle = require("src.battle.gen2.Battle")
   local PROTECT_EFFECT_ID = "GMAX_PROTECT_EFFECT"
   local MAX_GUARD_EFFECT_ID = "GMAX_MAX_GUARD_EFFECT"
   local MAX_GUARD_MOVE_ID = "BATTLE_FORMS_MAXGUARD"
@@ -72,21 +92,20 @@ return function(mod)
   -- turn).
   ------------------------------------------------------------------
   mod.content.move_effects:register(PROTECT_EFFECT_ID, {
-    kind = "full",
-    perform = function(ctx)
-      local battle, user = ctx.battle, ctx.user
+    kind = "primary",
+    run = function(battle, user)
       local consecutive = user.protectChainTurn == (battle.turnCount or 0) - 1
       local x = (consecutive and user.protectChainX) or 1
-      local success = ctx.rng(1, x) == 1
+      local success = battle:roller()(x) == 0
       if success then
         user.protected = true
         user.protectChainX = math.min(x * 3, 729)
         user.protectChainTurn = battle.turnCount
-        ctx.say(battle:romText("_ProtectedItselfText", "%s\nprotected itself!", ctx.displayName(user)))
+        battle:emit({ kind = "message",
+          text = battle:monName(user) .. " protected itself!" })
       else
         user.protectChainX = nil
-        battle:cancelMoveAnim()
-        ctx.say(battle:romText("_ButItFailedText", "But, it failed!"))
+        battle:emit({ kind = "message", text = "But it failed!" })
       end
     end,
   })
@@ -123,22 +142,21 @@ return function(mod)
   -- 75%-blocks-Max-Moves rule.
   ------------------------------------------------------------------
   mod.content.move_effects:register(MAX_GUARD_EFFECT_ID, {
-    kind = "full",
-    perform = function(ctx)
-      mod.log:info("galar_gmax_dex: modern_combat_protect: [diag] Max Guard perform() reached")
-      local battle, user = ctx.battle, ctx.user
+    kind = "primary",
+    run = function(battle, user)
+      mod.log:info("galar_gmax_dex: modern_combat_protect: [diag] Max Guard run() reached")
       local consecutive = user.protectChainTurn == (battle.turnCount or 0) - 1
       local x = (consecutive and user.protectChainX) or 1
-      local success = ctx.rng(1, x) == 1
+      local success = battle:roller()(x) == 0
       if success then
         user.maxGuarded = true
         user.protectChainX = math.min(x * 3, 729)
         user.protectChainTurn = battle.turnCount
-        ctx.say(battle:romText("_ProtectedItselfText", "%s\nprotected itself!", ctx.displayName(user)))
+        battle:emit({ kind = "message",
+          text = battle:monName(user) .. " protected itself!" })
       else
         user.protectChainX = nil
-        battle:cancelMoveAnim()
-        ctx.say(battle:romText("_ButItFailedText", "But, it failed!"))
+        battle:emit({ kind = "message", text = "But it failed!" })
       end
     end,
   })
@@ -225,11 +243,10 @@ return function(mod)
 
   ------------------------------------------------------------------
   -- Part C: turn-scoped cleanup. Runtime.emit("battle.turn_started", ...)
-  -- fires as the literal first statement in resolveTurn (BattleState.lua),
-  -- before either battler's action executes -- so clearing here, then
-  -- Protect's/Max Guard's own perform (above) re-setting a flag if used
-  -- again this turn, always happens in the right order regardless of
-  -- move order.
+  -- fires once both sides have chosen and before either acts, before
+  -- either battler's action executes -- so clearing here, then Protect's/
+  -- Max Guard's own run() (above) re-setting a flag if used again this
+  -- turn, always happens in the right order regardless of move order.
   ------------------------------------------------------------------
   mod.events:on("battle.turn_started", function(ev)
     local battle = ev and ev.battle
@@ -278,68 +295,75 @@ return function(mod)
   -- silently trusted.
   ------------------------------------------------------------------
   do
-    local patched = 0
-    for id in mod.content.moves:each() do
-      if type(id) == "string" and id:match("^BATTLE_FORMS_")
-          and not isMaxMove({ id = id })
-          and not id:match("^BATTLE_FORMS_TERA_BLAST") then
-        local ok = pcall(function() mod.content.moves:patch(id, { bypassesProtect = true }) end)
-        if ok then patched = patched + 1 end
+    -- Whole block pcall-guarded, not just each individual patch() call --
+    -- confirmed real risk: if mod.content.moves:each() itself doesn't
+    -- exist or throws for any reason, that was previously an UNCAUGHT
+    -- error that would abort the rest of this file's install (Part D
+    -- below, status-move blocking, never gets wired) and cascade further
+    -- (nothing calling this file's install function catches errors
+    -- either) -- exactly matching a live symptom of damage AND status
+    -- effects both failing to be blocked together, not just Z-Move
+    -- bypass being incomplete.
+    local runOk, runErr = pcall(function()
+      local patched = 0
+      for id in mod.content.moves:each() do
+        if type(id) == "string" and id:match("^BATTLE_FORMS_")
+            and not isMaxMove({ id = id })
+            and not id:match("^BATTLE_FORMS_TERA_BLAST") then
+          local ok = pcall(function() mod.content.moves:patch(id, { bypassesProtect = true }) end)
+          if ok then patched = patched + 1 end
+        end
       end
+      mod.log:info("galar_gmax_dex: modern_combat_protect: marked %d battle_forms move(s) as Protect/Max-Guard-bypassing (Z-Move heuristic)", patched)
+    end)
+    if not runOk then
+      mod.log:warn("galar_gmax_dex: modern_combat_protect: Z-Move bypass heuristic errored, skipped (%s)", tostring(runErr))
     end
-    mod.log:info("galar_gmax_dex: modern_combat_protect: marked %d battle_forms move(s) as Protect/Max-Guard-bypassing (Z-Move heuristic)", patched)
   end
 
   ------------------------------------------------------------------
   -- Part D: block an incoming pure status move (power == 0, a
-  -- record.kind == "primary" effect) against a protected target. See
-  -- the file header for why this can't reuse Part B's battle.damage
-  -- hook and why it doesn't just skip performMove outright.
+  -- record.kind == "primary"/"secondary" effect) against a protected
+  -- target. See the file header for why this can't reuse Part B's
+  -- battle.damage hook and why it doesn't just skip useMove outright.
+  --
+  -- Own move/Detect/Max Guard being reapplied is never caught by this:
+  -- attacker == defender whenever a mon targets itself, so `defender ~=
+  -- attacker` already excludes it without needing to name PROTECT_
+  -- EFFECT_ID/MAX_GUARD_EFFECT_ID specifically.
   ------------------------------------------------------------------
-  local nativePerformMove = BattleState.performMove
-  function BattleState:performMove(user, target, moveInst, isCalled)
-    local blockable = target and target ~= user and target.protected
-    if blockable then
-      -- read-only determination, pcall-guarded: figures out whether this
-      -- is a plain "primary" status effect worth intercepting, without
-      -- mutating anything yet.
-      local ok, move, record = pcall(function()
-        local m = self:moveDef(moveInst)
-        if not (m and (m.power or 0) == 0 and not m.bypassesProtect) then return nil end
-        local r = self:effectRecord(m.effect)
-        -- record.perform ("full") moves (Bide/Roar/Teleport/Mimic, and
-        -- Protect itself) are never blocked by Protect in real games --
-        -- they either don't meaningfully target an opponent or have
-        -- their own bespoke handling. Only the plain "primary" status
-        -- effect shape is intercepted here.
-        if not (r and r.kind == "primary" and r.run) then return nil end
-        return m, r
-      end)
-      if ok and move and record then
-        local nativeEffectRecord = self.effectRecord
-        self.effectRecord = function(_self, eff)
-          if eff == move.effect then
-            return {
-              kind = "primary",
-              accuracyChecked = record.accuracyChecked,
-              run = function(ctx)
-                return { ctx.battle:romText("_DoesntAffectMonText", "It doesn't affect\n%s!",
-                  EffectRegistry.displayName(target)) }
-              end,
-            }
-          end
-          return nativeEffectRecord(self, eff)
-        end
-        local callOk, callErr = pcall(nativePerformMove, self, user, target, moveInst, isCalled)
-        self.effectRecord = nativeEffectRecord
-        if not callOk then
-          mod.log:warn("galar_gmax_dex: modern_combat_protect: status-move block-check errored (%s)",
-            tostring(callErr))
-        end
-        return
-      end
+  local nativeUseMove = Battle.useMove
+  local nativeMoveEffectRecordFor = Battle.moveEffectRecordFor
+  function Battle:useMove(attacker, defender, moveId)
+    local blockable = defender and defender ~= attacker
+      and (defender.protected or defender.maxGuarded)
+    if not blockable then
+      return nativeUseMove(self, attacker, defender, moveId)
     end
-    return nativePerformMove(self, user, target, moveInst, isCalled)
+    local ok, def = pcall(function() return self:moveDef(moveId) end)
+    if not (ok and def and (def.power or 0) == 0 and not def.bypassesProtect) then
+      return nativeUseMove(self, attacker, defender, moveId)
+    end
+    Battle.moveEffectRecordFor = function(data, effect)
+      local real = nativeMoveEffectRecordFor(data, effect)
+      if real and (real.kind == "primary" or real.kind == "secondary") then
+        return {
+          kind = "primary",
+          run = function(battle)
+            battle:emit({ kind = "message",
+              text = "It doesn't affect " .. battle:monName(defender) .. "..." })
+          end,
+        }
+      end
+      return real
+    end
+    local callOk, callErr = pcall(nativeUseMove, self, attacker, defender, moveId)
+    Battle.moveEffectRecordFor = nativeMoveEffectRecordFor
+    if not callOk then
+      mod.log:warn("galar_gmax_dex: modern_combat_protect: status-move block-check errored (%s)",
+        tostring(callErr))
+      error(callErr, 0)
+    end
   end
 
   mod.log:info("galar_gmax_dex: modern_combat_protect loaded")
