@@ -1,5 +1,5 @@
--- Mod Manager option schema for GalarGmaxDex's W1 (wild spawns) / F1
--- (follower) native engines.
+-- Mod Manager option schema for g9-battle-engine-beta (combat-only fork:
+-- see main.lua's own header for what this fork does and doesn't own).
 --
 -- Declared in manifest.json's "options_schema" field, same as Wilds of
 -- Kanto's own options.lua, so the Mod Manager can lazy-load and render
@@ -25,71 +25,20 @@
 -- Keys/types/choices/defaults are unchanged from their original
 -- definitions, so every existing mod.options:get(...) read elsewhere in
 -- this mod keeps working exactly as before.
+-- [g9-battle-engine-beta] gmax_custom_art, animated_battle_sprites,
+-- wild_spawns_enabled, use_base_area_tables, classic_encounters,
+-- wild_max_per_map, follower_enabled, wild_contact_radius, and
+-- national_dex_sprites removed -- all sprite/spawn/overworld/follower
+-- toggles with nothing left in this fork to control. See
+-- g9-battle-engine for those.
+-- gimmicks and vanilla_enhanced_layout removed too (2026-08-20): both
+-- custom battle scenes (Gen 1 overlay + Gen 2 full screen) that these
+-- controlled are deleted outright, not just uncalled -- see main.lua's
+-- own header. gigantamax_size/gigantamax_skip_animation stay, dormant --
+-- gimmick_dynamax.lua itself is kept (commented out in main.lua, not
+-- deleted) pending proper hooks into whichever other mod ends up owning
+-- Gigantamax activation.
 return {
-  {
-    key = "gmax_custom_art",
-    label = "CUSTOM GIGANTAMAX ART",
-    type = "choice",
-    default = "true",
-    choices = { { "ON", "true" }, { "OFF", "false" } },
-  },
-  {
-    key = "animated_battle_sprites",
-    label = "ANIMATED BATTLE SPRITES",
-    type = "choice",
-    default = "true",
-    choices = { { "ON", "true" }, { "OFF", "false" } },
-  },
-  {
-    key = "wild_spawns_enabled",
-    label = "Wild Spawns",
-    type = "toggle",
-    default = true,
-    description = "Show visible wild Pokemon walking in grass (W1 native engine). Battle triggers on contact.",
-  },
-  {
-    key = "use_base_area_tables",
-    label = "Base Area Tables",
-    type = "toggle",
-    default = false,
-    description = "Use GalarGmaxDex's built-in area spawn tables. OFF by default to allow custom spawn tables from other mods to take effect.",
-  },
-  {
-    key = "classic_encounters",
-    label = "Classic Enc",
-    type = "toggle",
-    default = false,
-    description = "Allow the vanilla step-based random encounter roll in addition to visible wild spawns. OFF by default -- visible spawns already provide encounters; leaving both on doubles encounter frequency.",
-  },
-  {
-    key = "wild_max_per_map",
-    label = "Max Per Map",
-    type = "choice",
-    default = 4,
-    choices = { { "1", 1 }, { "2", 2 }, { "3", 3 }, { "4", 4 }, { "6", 6 }, { "8", 8 } },
-    description = "Maximum simultaneous visible wild Pokemon per map (W1).",
-  },
-  {
-    key = "follower_enabled",
-    label = "Follower",
-    type = "toggle",
-    default = true,
-    description = "Show a party follower trailing the player in the overworld (F1 native engine).",
-  },
-  -- Contact-trigger area for wild encounters (proximity contact -> battle,
-  -- Phase 6 -- the classic 2D grid trigger is untouched per explicit user
-  -- instruction and isn't cell-based in a way this could shrink anyway).
-  -- Previously a fixed "adjacent cell" check, which in continuous pixel
-  -- terms is a 16px center-to-center reach -- reported too generous.
-  -- Default here is 13px, 80% of that 16px baseline.
-  {
-    key = "wild_contact_radius",
-    label = "Wild Contact Area",
-    type = "choice",
-    default = 13,
-    choices = { { "65% (10px)", 10 }, { "80% (13px)", 13 }, { "90% (14px)", 14 }, { "100% (16px)", 16 } },
-    description = "How close (pixels, center-to-center) the player must get to a wild spawn to trigger contact. Does not affect the classic 2D grid trigger.",
-  },
   -- Not yet consulted anywhere -- explicit user request to leave this
   -- placeholder in place for a future pass that prints "X lost Y HP!"
   -- style messages using our own computed damage number (both gens).
@@ -102,22 +51,6 @@ return {
     default = "false",
     choices = { { "ON", "true" }, { "OFF", "false" } },
     description = "Not yet implemented. Reserved for a future \"X lost Y HP!\" battle message using this mod's own computed damage number.",
-  },
-  {
-    key = "gimmicks",
-    label = "GIMMICKS",
-    type = "choice",
-    default = "false",
-    choices = { { "ON", "true" }, { "OFF", "false" } },
-    description = "Master switch for the gimmick menu (Dynamax/Mega/Z-Move/Tera picker, injected via START into the vanilla move-select screen). Battles stay fully vanilla otherwise -- native draws everything, nothing forced. VANILLA ENHANCED below picks which one battle layout actually gets it.",
-  },
-  {
-    key = "vanilla_enhanced_layout",
-    label = "VANILLA ENHANCED",
-    type = "choice",
-    default = "og",
-    choices = { { "OG", "og" }, { "WIDE", "wide" } },
-    description = "With GIMMICKS on: which battle layout gets the gimmick menu (and its correct free left/right/up/down move-list navigation -- native's own OG code only ever handles up/down, and native's own Wide grid bounces to the opposite side instead of holding position; both are fixed here). Only the layout selected here is affected -- switch this to match whichever BATTLE LAYOUT you're actually using.",
   },
   {
     key = "gen2_wide_layout",
@@ -133,7 +66,7 @@ return {
     type = "choice",
     default = "false",
     choices = { { "ON", "true" }, { "OFF", "false" } },
-    description = "Replaces native menu screens with GalarGmaxDex's own GUI, styled like the custom battle scene. Covers: party overview + moves/relearn/IV-EV screens, the title screen menu, the in-game start menu (with a MOD MENUS hub for other mods' rows), the options menu, and the mod manager. Battle switch prompts and TM/HM teach mode still render natively; bag and Pokedex are not covered yet. OFF (default): menus are fully vanilla.",
+    description = "Replaces native menu screens with GalarGmaxDex's own GUI. Covers: party overview + moves/relearn/IV-EV screens, the title screen menu, the in-game start menu (with a MOD MENUS hub for other mods' rows), the options menu, and the mod manager. Battle switch prompts and TM/HM teach mode still render natively; bag and Pokedex are not covered yet. OFF (default): menus are fully vanilla.",
   },
   {
     key = "gigantamax_size",
@@ -150,13 +83,5 @@ return {
     default = "false",
     choices = { { "ON", "true" }, { "OFF", "false" } },
     description = "ON: Gigantamax's size-up and size-down happen instantly (0 seconds, no staged ramp/pause) instead of the eased multi-stage animation. OFF (default): the full animated sequence plays.",
-  },
-  {
-    key = "national_dex_sprites",
-    label = "NATIONAL DEX SPRITES",
-    type = "choice",
-    default = "true",
-    choices = { { "ON", "true" }, { "OFF", "false" } },
-    description = "ON (default): for species national_dex itself added beyond the cart's native roster, national_dex's own real sprite (if it has one) is used instead of GalarGmaxDex's bundled art. OFF: GalarGmaxDex's own bundled art always wins for every species in its pack. Either way, GalarGmaxDex's art always wins over the cart's own native sprite (e.g. Cyndaquil in Gen 2) -- this option only ever decides national_dex vs. GalarGmaxDex, never vanilla vs. GalarGmaxDex.",
   },
 }

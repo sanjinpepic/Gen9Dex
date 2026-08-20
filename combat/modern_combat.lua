@@ -40,6 +40,22 @@ return function(mod)
     return Gen2Battle ~= nil and battle ~= nil and getmetatable(battle) == Gen2Battle
   end
 
+  -- Confirmed live (2026-08-20, Max Guard): ctx.battle isn't always the
+  -- real, metatable-matching Gen 2 Battle instance every battle.damage
+  -- hook call gets -- whatever battle_forms's own Max Guard block-check
+  -- does to trigger this hook hands it a ctx.battle that fails
+  -- isGen2Battle's identity check even during a genuine Gen 2 battle,
+  -- which sent every downstream gen2-gated helper (rawStat included)
+  -- down the Gen 1 branch and crashed on who.curStats -- a field that
+  -- only ever exists on Gen 1's battler wrapper, never on a real Gen 2
+  -- raw mon (which only ever has .stats). This checks the mon objects
+  -- themselves as a self-contained fallback signal, since a real Gen 1
+  -- battler always has .curStats and a real Gen 2 mon never does --
+  -- unlike ctx.battle's identity, that can't be spoofed/missing.
+  local function monLooksGen2(who)
+    return who ~= nil and who.curStats == nil and who.stats ~= nil
+  end
+
   -- Gen 1's battler wrapper exposes curTypes (Transform/Conversion-
   -- aware); Gen 2's raw mon carries the same live-type list as .types
   -- (confirmed from Gen 2's own native STAB check, gen2/Damage.lua:
@@ -728,7 +744,9 @@ return function(mod)
       return 0, { crit = false, typeMult = 10 }
     end
 
-    local gen2 = isGen2Battle(ctx.battle)
+    -- monLooksGen2 fallback: see its own definition above for why
+    -- ctx.battle's identity alone isn't always trustworthy here.
+    local gen2 = isGen2Battle(ctx.battle) or monLooksGen2(user) or monLooksGen2(target)
 
     -- Endeavor: not a scaled-power move at all (real PBS power=1 is that
     -- convention's placeholder for "computed at runtime", same as Heat
