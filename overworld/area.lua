@@ -63,6 +63,22 @@ return function(mod)
   -- =====================================================================
   local GameVersion = require("src.core.GameVersion")
   if GameVersion.generation(GameVersion.get()) == 2 then
+    mod.content.encounters:patch("surf", {
+      ROUTE_31 = {
+        rates = { MORN = 25, DAY = 25, NITE = 25 },
+        slots = {
+          MORN = {
+            { species = "MAGIKARP", level = 18 },
+            { species = "FRILLISH", level = 16 },
+            { species = "STARYU", level = 14 },
+            { species = "MUDKIP", level = 15 },
+            { species = "BUIZEL", level = 17 },
+            { species = "QUAXLY", level = 14 },
+            { species = "WOOPER", level = 20 },
+          },
+        }
+      }
+    }),
     mod.content.encounters:patch("grass", {
       ROUTE_46 = {
         rates = { MORN = 25, DAY = 25, NITE = 25 },
