@@ -150,9 +150,9 @@ return function(mod)
   -- ------- species -> sprite lookup, shared with overworld_spawns.lua ---
   -- Both wild spawns and the follower reference the exact same registered
   -- native sprite id (SPRITE_GGD_WILD_<species>, all sharing one generic
-  -- assets/wild_walkers/placeholder.png -- see overworld_spawns.lua's own
-  -- Phase 1 header for why a shared placeholder is correct here, not a
-  -- per-species asset); overworld_spawns.lua already registered one per
+  -- placeholder image -- see overworld_spawns.lua's own Phase 1 header for
+  -- why a shared placeholder is correct here, not a per-species asset);
+  -- overworld_spawns.lua already registered one per
   -- species this same mod load, so this reuses that registry instead of
   -- re-registering (mod.content.sprites:register would error on a
   -- duplicate id). Falls back to an empty table (follower simply can't

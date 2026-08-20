@@ -102,14 +102,11 @@ return function(mod)
   -- no per-species art file needed at all.
   --
   -- assets/wild_walkers/ used to be ~1400 individual per-species 16x96
-  -- sheets (generated from Overworld_Sprites/Followers). Removed outright
-  -- this session (explicit user instruction, "a bad asset that still
-  -- lingers") and briefly regenerated as per-species placeholders when a
-  -- live crash (Route 29 wild spawns AND the party follower, both hitting
-  -- this exact registry) proved the files still needed to exist -- but
-  -- root-causing that crash properly (src/render/SpriteRenderer.lua:
-  -- 135-153's SpriteRenderer.new) showed WHY, and it has nothing to do
-  -- with per-species art:
+  -- sheets (generated from Overworld_Sprites/Followers), then a single
+  -- shared placeholder file after that. Root-caused directly (src/render/
+  -- SpriteRenderer.lua:135-153's SpriteRenderer.new) that this registry
+  -- entry's own image content has nothing to do with what a player ever
+  -- sees:
   --   self.image = getImage(spriteDef.image)   -- eager, unconditional,
   --   local iw, ih = self.image:getDimensions()  -- AT ENTITY CONSTRUCTION
   -- getImage/Assets.image have no pcall anywhere in that chain -- a
@@ -123,13 +120,23 @@ return function(mod)
   -- used only to satisfy love.graphics.newQuad's own API (which needs a
   -- source-texture-size argument), a pure rendering-math technicality.
   -- Since drawLossless/applyLosslessDraw already replace this sprite's
-  -- draw() entirely, the underlying image's actual pixel content was
-  -- NEVER visible to a player in the first place -- so every species
-  -- sharing ONE always-present placeholder file satisfies
-  -- SpriteRenderer.new's hard "must be a real, loadable image" engine
-  -- requirement exactly as well as 1400 unique ones did, at a fraction of
-  -- the size and with nothing left to go stale.
-  local WALKER_PLACEHOLDER = mod.path .. "/assets/wild_walkers/placeholder.png"
+  -- draw() entirely, the underlying image's actual pixel content is NEVER
+  -- visible to a player.
+  --
+  -- Explicit user call: a whole separate assets/wild_walkers/ folder just
+  -- to hold one never-seen placeholder file is an unnecessary dependency
+  -- -- something outside this session's own edits already made that
+  -- folder vanish once (a real, live crash), and a single stray file is
+  -- easy to lose again. assets/overworld/000.png is reused instead: it's
+  -- produced by the SAME extraction pipeline (overworldExtraction.py)
+  -- every other overworld sprite is, for the same reason (national_dex's
+  -- own "000"/unknown-species identity), so it's exactly as guaranteed to
+  -- exist as this mod's real overworld art is -- no separate asset to
+  -- maintain or lose. love.filesystem is sandboxed out of mod code
+  -- entirely (confirmed elsewhere in this file), so an in-memory-only
+  -- ImageData isn't an option here -- love.graphics.newImage still needs
+  -- a real path to something.
+  local WALKER_PLACEHOLDER = mod.path .. "/assets/overworld/000.png"
   local spriteIdFor = {}
   do
     local registered = 0
