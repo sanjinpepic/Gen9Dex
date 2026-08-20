@@ -81,13 +81,13 @@ return function(mod)
   -- rows rather than one combined fraction) so a later pass can add
   -- an entry without ever touching computeModernDamage's body.
   --
-  -- STAB is the only built-in entry today. Documented, NOT implemented,
-  -- extension points for later work (deliberately out of scope this
-  -- pass, per explicit user priority: "the whole framework first"):
-  --   "tera_stab" (~priority 110, above "stab"): needs a battler
-  --     teraType field that doesn't exist yet on this engine's battler
-  --     shape -- 2.0x when move.type == teraType and teraType isn't
-  --     already one of the mon's natural types, else defer to "stab".
+  -- STAB is one of two built-in entries today. "tera_stab" (priority 110,
+  -- above "stab"'s 100) is combat/modern_tera.lua's own -- see that file's
+  -- header for the full rule; "stab" itself defers to it (returns 1.0)
+  -- whenever the attacker is Terastallized, so the two never double-count
+  -- the same hit.
+  --
+  -- Documented, NOT implemented, extension point for later work:
   --   "adaptability_stab": an ability multiplier replacing stab's 1.5x
   --     with 2.0x for a matching type -- register at the same priority
   --     as "stab" and have "stab" itself check for the ability and
@@ -140,7 +140,20 @@ return function(mod)
   -- Built-in: STAB. A flat 1.5x when the move's type is one of the
   -- attacker's current types (curTypes -- Transform/Conversion-aware,
   -- same field native Damage.compute already reads).
+  --
+  -- Defers entirely (returns 1.0) whenever the attacker is Terastallized:
+  -- combat/modern_tera.lua's own "tera_stab" (priority 110, above this
+  -- one) owns the whole STAB computation in that case instead, since
+  -- curTypesOf() only ever holds the tera type once Terastallized (the
+  -- mon's ORIGINAL types are gone from it entirely) -- this modifier alone
+  -- would silently lose original-type STAB and never grant the real 2.0x
+  -- when the tera type matches an original one. See modern_tera.lua's own
+  -- header for the full rule; this is the seam this file's own comment
+  -- already reserved for it.
   registerDamageModifier("stab", 100, function(ctx)
+    if mod.exports.isTerastallized and mod.exports.isTerastallized(ctx.battle, ctx.user, ctx.gen2) then
+      return 1.0
+    end
     for _, t in ipairs(curTypesOf(ctx.user, ctx.gen2)) do
       if t == ctx.move.type then return 1.5 end
     end
@@ -895,12 +908,33 @@ return function(mod)
       end
 
       local targetTypes = curTypesOf(target, gen2)
+      -- Tera-Stellar defensive override: a no-op call (returns targetTypes
+      -- unchanged) for every target except a Stellar-Terastallized one --
+      -- see combat/modern_tera.lua's own header for why Stellar uniquely
+      -- keeps its ORIGINAL types defensively instead of the chosen-type
+      -- replacement every other Tera Type gets for free through
+      -- battle_forms's own curTypes/formTypes override.
+      if mod.exports.defensiveTypesOf then
+        targetTypes = mod.exports.defensiveTypesOf(ctx.battle, target, gen2, targetTypes)
+      end
       mult = TypeChart.effectiveness(move.type, targetTypes)
       if mult == 0 then
         return 0, { crit = false, typeMult = 0 }
       end
       for _, m in ipairs(TypeChart.rows(move.type, targetTypes)) do
         d = math.floor(d * m / 10)
+      end
+      -- Stellar's own "always weak to Stellar moves" rule: an additional
+      -- x2, not a chart row (Stellar deliberately carries none) -- fires
+      -- only when the incoming move is Stellar-typed AND the target is
+      -- itself Stellar-Terastallized, regardless of what its real types
+      -- do or don't resist.
+      if mod.exports.stellarWeaknessMultiplier then
+        local extra = mod.exports.stellarWeaknessMultiplier(ctx.battle, target, gen2, move.type)
+        if extra and extra ~= 1.0 then
+          d = math.floor(d * extra)
+          mult = math.floor(mult * extra)
+        end
       end
     end
 

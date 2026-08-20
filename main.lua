@@ -912,6 +912,13 @@ return function(mod)
   local installDynamaxState = loadSibling(mod, "gigantamax/dynamax_state.lua")
   installDynamaxState(mod, gmaxDataForDynamaxState)
 
+  -- Tera Type: storage + public API only, same scope discipline as Dynamax
+  -- Level/Gigantamax Factor above -- no activation, battle_forms's own
+  -- Terastallization menu/item/registry slot untouched. See
+  -- gigantamax/tera_state.lua's own header for the full grounding.
+  local installTeraState = loadSibling(mod, "gigantamax/tera_state.lua")
+  installTeraState(mod)
+
   -- [g9-battle-engine-beta] Phase 3's Gigantamax ASSET pack call, Phase 4
   -- (battle sprites), Phase 5 (overworld sprite provider + party icons),
   -- Phase 6 (wild encounter area placements), Phase 7 (native overworld
@@ -944,6 +951,11 @@ return function(mod)
   installModernCombat(mod)
   local installModernCombatProtect = loadSibling(mod, "combat/modern_combat_protect.lua")
   installModernCombatProtect(mod)
+  -- Terastallization's own combat mechanics (STAB fix, Stellar defense/
+  -- economy, Tera Blast's Stellar variant) -- consumes modern_combat.lua's
+  -- exports, must load after it. See combat/modern_tera.lua's own header.
+  local installModernTera = loadSibling(mod, "combat/modern_tera.lua")
+  installModernTera(mod)
 
   -- Phase 1 of the move-effect completion pipeline: wires moves_new.lua's
   -- stat-stage-change stubs to modern_combat.lua's changeStage primitive.
