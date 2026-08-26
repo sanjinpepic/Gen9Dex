@@ -3,9 +3,10 @@
 -- MIRRORCOAT, both still effect="NO_ADDITIONAL_EFFECT" going into this
 -- file). DETECT's patch lives directly in modern_combat_protect.lua (the
 -- identical one-line pattern to that file's own PROTECT patch); FEINT's
--- Protect-bypass is a plain moves_new.lua data field (bypassesProtect) plus
--- a MOVE_REGISTER_FIELDS entry in main.lua -- neither needs a move_effects
--- registration of its own, so neither lives here.
+-- Protect-bypass is a plain moves_new.lua data field (bypassesProtect),
+-- patched onto the live FEINT record by main.lua's wireMovepoolSubEffects
+-- -- neither needs a move_effects registration of its own, so neither
+-- lives here.
 --
 -- What COUNTER's real implementation turned out to be (grepped src/battle/
 -- MoveEffects.lua and EffectRegistry.lua for "COUNTER" first, per this

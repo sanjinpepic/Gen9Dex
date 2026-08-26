@@ -184,10 +184,10 @@ return function(mod)
   -- directly off the merged move_effects record by BattleState:performMove
   -- (:3602: "charge moves: first turn just charges" -- confirmed against
   -- native CHARGE_EFFECT/FLY_EFFECT, MoveEffects.lua:556-557), NOT a
-  -- field on the move's own registration data -- R.moves (Schemas.lua:
-  -- 824-846) has chargeText/semiInvulnerable but no `charge` field at
-  -- all, so there is nothing to add to MOVE_REGISTER_FIELDS in main.lua
-  -- for this (checked, not assumed).
+  -- field on the move's own data at all -- R.moves (Schemas.lua:824-846)
+  -- has chargeText/semiInvulnerable but no `charge` field at all, so
+  -- there is nothing for this mod to patch onto a move record for this
+  -- (checked, not assumed).
   --
   -- Bounce, Outrage, and Eternabeam are NOT wired by pointing their
   -- moves_new.lua `effect` straight at Gen 1's native ids (FLY_EFFECT /

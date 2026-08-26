@@ -24,8 +24,8 @@
 -- Confirmed empirically (not assumed) before writing this: movesFull/
 -- movesByMethod entries' `move` field is already the real engine-spelled
 -- move id (e.g. "LIGHT_SCREEN", "GIGADRAIN", "DOUBLE_EDGE" -- sampled
--- directly from national_dex's own extras/001.lua), matching moves_new.lua
--- and learnsets_data.lua's own id convention. No extra translation needed.
+-- directly from national_dex's own extras/001.lua), matching moves_new
+-- .lua's own id convention. No extra translation needed.
 --
 -- Scope, explicit: level-up learnset (learnset/levelMoves/level1Moves,
 -- the only fields this engine's schema actually has per species) plus
@@ -35,7 +35,7 @@
 -- level1Moves/learnset/levelMoves/eggMoves exist) -- whatever gates TM
 -- compatibility lives elsewhere in the engine and isn't touched here; a
 -- known, stated gap, not silently assumed handled.
-return function(mod, movesData)
+return function(mod)
   local GameVersion = require("src.core.GameVersion")
   local isGen2 = GameVersion.generation(GameVersion.get()) == 2
 
@@ -46,85 +46,36 @@ return function(mod, movesData)
     return { isUsable = function() return true end }
   end
 
-  -- Completeness gate: does GalarGmaxDex have a REAL (non-stub) effect for
-  -- this move id. functionCode never reaches the live move registry
-  -- (main.lua filters it out before :register), so this can't be read
-  -- back off mod.content.moves at runtime -- the raw movesData table
-  -- (moves_new.lua's own return value) is the only place this survives.
-  -- main.lua's own isMoveDataComplete, not a second copy -- confirmed
-  -- drift bug this session: an earlier inline duplicate here missed
-  -- main.lua's RemoveProtections/ProtectUser special cases entirely,
-  -- which would have kept Feint/Protect/Detect gated out as "incomplete"
-  -- forever, regardless of how complete their real implementations
-  -- actually were. main.lua exports this right after registerNewMoves
-  -- runs, before this file is ever installed, so it's always set here.
+  -- Completeness gate: does this mod have a REAL (non-stub) effect for
+  -- this move id, read ENTIRELY off the live registry now -- no static
+  -- per-move data file backing this at all anymore (moves_new.lua is
+  -- gone; see main.lua's wireMovepoolSubEffects header for the full
+  -- migration). main.lua's own isMoveDataComplete, not a second copy --
+  -- confirmed drift bug this session: an earlier inline duplicate here
+  -- missed main.lua's own exemptions entirely, which would have kept
+  -- genuinely-complete moves gated out as "incomplete" forever. main.lua
+  -- exports this right after wireMovepoolSubEffects runs, before this
+  -- file is ever installed, so it's always set here.
   local isMoveDataComplete = mod.exports.isMoveDataComplete
-    or function(def)
-      return def.multiHit ~= nil or def.effect ~= "NO_ADDITIONAL_EFFECT" or def.functionCode == "None"
+    or function(liveRecord)
+      return liveRecord ~= nil and liveRecord.effect ~= "NO_ADDITIONAL_EFFECT"
     end
-  local ourCompleteness = {}
-  for id, def in pairs(movesData) do
-    ourCompleteness[id] = isMoveDataComplete(def)
-  end
 
   local ndModeledCache = {}
-  -- Anything not in movesData is either a Gen 1-native move (base engine,
-  -- always fully implemented, no functionCode baggage to check), a move
-  -- national_dex registered that some OTHER file in this mod later gave
-  -- a real implementation via a runtime :patch (checked below, against
-  -- the live registry -- trick_room.lua's own TRICKROOM patch is exactly
-  -- this case), or one GalarGmaxDex genuinely has no opinion on at all.
-  -- Only for that last, genuine case does national_dex's own per-
-  -- generation modeled flag apply -- not authoritative for OUR work (see
-  -- header), but a reasonable fallback for moves we truly don't own. A
-  -- move unknown to every source is assumed usable: nothing to gate on,
-  -- and refusing to teach a move nobody has an opinion about would be a
-  -- worse failure mode than teaching it.
-  --
-  -- Confirmed real bug, live-reported and fixed here: this comment always
-  -- described native moves as "always fully implemented," but the code
-  -- below never actually checked for that -- it fell straight to
-  -- national_dex's gen1EffectModeled/gen2EffectModeled for EVERY move not
-  -- in our own data, native or not. That flag is national_dex's own
-  -- opinion about whether IT modeled a SECONDARY effect for a move IT
-  -- introduced -- irrelevant for a plain, no-secondary-effect native move
-  -- like Tackle or Ember, which the cart already fully implements with no
-  -- effect of its own to model at all. National_dex's own moveById()
-  -- exposes exactly the right signal for this (confirmed real field,
-  -- national_dex/src/api.lua: "engineMove (bool: is this one of the
-  -- cart's own moves)") -- checked FIRST, unconditionally usable when
-  -- true, before ever consulting the modeled flag (which only makes
-  -- sense for moves national_dex itself contributed).
+  -- Every move is judged the SAME way now: read its live registered
+  -- record (which already carries forward every field national_dex
+  -- itself set, R.moves being schema-leniant about unknown fields, plus
+  -- anything any file in this mod has since patched onto it -- trick_room
+  -- .lua's own TRICKROOM patch, modern_combat_protect.lua's PROTECT/
+  -- DETECT patches, etc.) through isMoveDataComplete. A move with no live
+  -- record at all (genuinely unknown to this engine) falls back to
+  -- national_dex's own per-generation modeled flag -- not authoritative
+  -- for this mod's own work, but a reasonable last resort; a move unknown
+  -- to every source is assumed usable rather than refused, since refusing
+  -- a move nobody has an opinion about is a worse failure mode than
+  -- teaching it.
   local function isUsable(moveId)
-    if ourCompleteness[moveId] ~= nil then return ourCompleteness[moveId] end
     if ndModeledCache[moveId] ~= nil then return ndModeledCache[moveId] end
-    -- Confirmed real bug, user-reported: a move national_dex registered
-    -- but never appeared in movesData (moves_new.lua's own static table)
-    -- can still get a REAL GalarGmaxDex implementation later, patched
-    -- straight onto the live registry by another file in this mod (e.g.
-    -- trick_room.lua's mod.content.moves:patch("TRICKROOM", {effect=...})
-    -- ). national_dex only registers the move; it never decides whether
-    -- OUR implementation of it passes -- that's this file's own job, the
-    -- same as every move that WAS in movesData. The check above (via
-    -- ourCompleteness) only ever looked at the static table as it stood
-    -- at mod-load time, before any later patch from a sibling file like
-    -- trick_room.lua could apply -- so a since-patched move fell straight
-    -- through to national_dex's own gen1/gen2EffectModeled flag, which is
-    -- a frozen snapshot from national_dex's OWN build step (this file's
-    -- own header already established that flag has zero runtime awareness
-    -- of any other mod) and has no way to ever reflect a patch applied
-    -- after it. Reading the LIVE registry here (mod.content.moves:get,
-    -- confirmed real: src/mods/Loader.lua:896-899) picks up every patch
-    -- applied before this runs, from ANY file in this mod, checked with
-    -- the identical isMoveDataComplete criteria the static table itself
-    -- used -- not a separate, looser standard. functionCode does not
-    -- survive onto the live registry (main.lua's own comment on
-    -- isMoveDataComplete: filtered out before :register), so this only
-    -- catches completeness signaled through effect/multiHit -- exactly
-    -- what a runtime :patch like trick_room.lua's own sets, and exactly
-    -- the gap that left Trick Room gated as "not ready" despite
-    -- trick_room.lua's real 5-turn/-7-priority/toggle-off implementation
-    -- already being installed.
     local liveOk, liveDef = pcall(mod.content.moves.get, mod.content.moves, moveId)
     if liveOk and liveDef and isMoveDataComplete(liveDef) then
       ndModeledCache[moveId] = true

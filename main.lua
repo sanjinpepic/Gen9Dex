@@ -13,13 +13,16 @@
 -- evolutions bound in from species_evolutions.lua (national_dex's own
 -- evolutions field ships empty).
 --
--- Phase 2 (registerNewMoves/patchLearnsets below) replaces Phase 1's
+-- Phase 2 (wireMovepoolSubEffects/patchLearnsets below) replaces Phase 1's
 -- placeholder { "TACKLE" } moveset with each species' real level-up
--- learnset. See moves_new.lua's header for the full fully-replicated /
--- approximated / stubbed triage across the 174 non-native moves it
--- registers; 68 more moves in these learnsets are Gen 1-native (already
--- fully implemented by the base engine) and need no registration here at
--- all, only the id translation baked into learnsets_data.lua.
+-- learnset. See wireMovepoolSubEffects's own header for how move
+-- completeness is judged -- entirely off national_dex's own live data,
+-- no static per-move triage file. Base move data itself is always
+-- national_dex's alone, never registered by this mod.
+-- combat/learnset_ownership.lua (national_dex's own unfiltered movesets)
+-- is the real, current learnset source -- the old combat/learnsets_data
+-- .lua self-authored table this comment used to point at has been
+-- deleted, it had been dead/unreferenced for a while already.
 --
 -- Two evolution triggers this batch needs don't exist in the base engine
 -- and are built here, scoped to just what this mod needs:
@@ -75,11 +78,10 @@ end
 -- =============================================================================
 -- Phase 2: movepool effects
 -- =============================================================================
--- Registers one move_effect per distinct chance value actually used in
--- moves_new.lua's GALAR_FLINCH_EFFECT_<chance> / GALAR_CONFUSE_EFFECT_<chance>
--- ids (derived from the data, not hardcoded, so a later phase adding more
--- moves at a new chance tier needs no change here) plus the one
--- unconditional GALAR_TRAP_EFFECT.
+-- Flinch/confusion chance read LIVE off national_dex's own moveById
+-- record on every landed hit (see installMovepoolEffects's own header) --
+-- no per-chance move_effect registration of any kind anymore, just the
+-- one unconditional GALAR_TRAP_EFFECT.
 --
 -- BUGFIX (this session, reported: "flinched pokemon can't act ever
 -- again"): the original version of Flinch/Confuse registered
@@ -133,42 +135,36 @@ end
 -- Duration values (confusedTurns, 2-5 turns) are reasonable
 -- approximations, not confirmed exact -- this engine's own real formula
 -- was not found in any reference source; unchanged by this fix.
--- OUTDATED APPROACH, kept working (toggle-off/native-Gen2-mode fallback
--- only) -- 2026-08-23, same reversal as moves_new.lua's own header. New
--- move-effect work reads national_dex's dex.exports.moveById(id) for its
--- modern fields directly, through combat/showdown_primitives.lua, rather
--- than growing this function's GALAR_FLINCH/CONFUSE/TRAP registrations.
-local function installMovepoolEffects(mod, movesData)
-  local flinchChanceByMove, confuseChanceByMove = {}, {}
-  for id, def in pairs(movesData) do
-    local chance = def.effect:match("^GALAR_FLINCH_EFFECT_(%d+)$")
-    if chance then flinchChanceByMove[id] = tonumber(chance) end
-    chance = def.effect:match("^GALAR_CONFUSE_EFFECT_(%d+)$")
-    if chance then confuseChanceByMove[id] = tonumber(chance) end
-  end
-
-  local registeredEffect = {}
-  local function registerFullStub(id)
-    if registeredEffect[id] then return end
-    mod.content.move_effects:register(id, { kind = "full" })
-    registeredEffect[id] = true
-  end
-  for _, chance in pairs(flinchChanceByMove) do
-    registerFullStub("GALAR_FLINCH_EFFECT_" .. chance)
-  end
-  for _, chance in pairs(confuseChanceByMove) do
-    registerFullStub("GALAR_CONFUSE_EFFECT_" .. chance)
-  end
+--
+-- FULLY MIGRATED off moves_new.lua (2026-08-26): flinch/confusion chance
+-- read LIVE from national_dex's own moveById record (flinchChance,
+-- ailment=="confusion"+ailmentChance) for EVERY landed hit, not from a
+-- precomputed table built from this mod's own static data. This also
+-- means no per-move GALAR_FLINCH_EFFECT_<chance>/GALAR_CONFUSE_EFFECT_
+-- <chance> registration is needed at all anymore -- the listener reacts
+-- to the real move id directly, independent of whatever that move's own
+-- registered `effect` field says. Strictly more general than the old
+-- approach too: it now applies to EVERY move in national_dex's full
+-- roster (any native Gen 1/2 move with a real flinch/confusion chance,
+-- not just the 179 this mod's own moves_new.lua happened to cover).
+local function installMovepoolEffects(mod)
+  local nationalDex = mod.find and mod.find("national_dex")
+  assert(nationalDex and nationalDex.exports and nationalDex.exports.moveById,
+    "installMovepoolEffects: national_dex must be loaded first")
+  local moveById = nationalDex.exports.moveById
 
   mod.events:on("battle.damage_dealt", function(ev)
     local battle = ev and ev.battle
     local moveId = ev and ((ev.move and ev.move.id) or ev.moveId)
     local target = ev and ev.target
     if not (battle and moveId and target) then return end
-    local flinchChance = flinchChanceByMove[moveId]
-    local confuseChance = confuseChanceByMove[moveId]
+    local ok, info = pcall(moveById, moveId)
+    if not (ok and info) then return end
+    local flinchChance = (info.flinchChance or 0) > 0 and info.flinchChance or nil
+    local confuseChance = (info.ailment == "confusion" and (info.ailmentChance or 0) > 0)
+      and info.ailmentChance or nil
     if not (flinchChance or confuseChance) then return end
-    local ok, err = pcall(function()
+    local applyOk, err = pcall(function()
       -- isGen2Battle is looked up lazily (not hoisted to a local at the
       -- top of this file) because installMovepoolEffects runs during
       -- Phase 2, before combat/modern_combat.lua (Phase 6+) has loaded
@@ -210,12 +206,15 @@ local function installMovepoolEffects(mod, movesData)
         end
       end
     end)
-    if not ok then
+    if not applyOk then
       mod.log:warn("galar_gmax_dex: installMovepoolEffects: flinch/confuse failed: %s",
         tostring(err))
     end
   end)
 
+  -- Unconditional registration, genuinely independent of any per-move
+  -- data -- only SANDTOMB's own live record gets patched to point at it
+  -- (see wireMovepoolSubEffects below).
   mod.content.move_effects:register("GALAR_TRAP_EFFECT", {
     kind = "secondary",
     run = function(ctx)
@@ -231,97 +230,229 @@ local function installMovepoolEffects(mod, movesData)
   })
 end
 
--- Fields mod.content.moves:register actually understands. moves_new.lua
--- also carries `functionCode` (the original PBS FunctionCode, kept purely
--- as documentation of what got stubbed) -- deliberately not passed through.
--- bypassesProtect: Phase 3 of the move-effect completion pipeline (Feint)
--- -- a plain data flag, not schema-declared on R.moves (Schemas.lua:824-846)
--- but preserved anyway by that schema's own record-mode leniency (same
--- "unknown top-level fields ride through" behavior modern_movepool_damage
--- .lua's header already confirmed for R.move_effects); modern_combat_
--- protect.lua's battle.damage hook already reads it off the live
--- registered move, it just needed to actually reach that record.
-local MOVE_REGISTER_FIELDS = {
-  "name", "type", "category", "power", "accuracy", "pp",
-  "priority", "highCrit", "effect", "multiHit", "bypassesProtect",
+-- bypassesProtect (Feint's own flag, Phase 3 of the move-effect
+-- completion pipeline) -- a plain data flag, not schema-declared on
+-- R.moves (Schemas.lua:824-846) but preserved anyway by that schema's
+-- own record-mode leniency (same "unknown top-level fields ride through"
+-- behavior modern_movepool_damage.lua's header already confirmed for
+-- R.move_effects); modern_combat_protect.lua's battle.damage hook reads
+-- it off the live move record, patched on by wireMovepoolSubEffects
+-- below rather than registered as part of a full move entry. national_
+-- dex has no equivalent field -- this mod invented it, it belongs here
+-- as a small hardcoded map, not a file.
+local BYPASSES_PROTECT = { FEINT = true }
+
+-- Every move whose real custom effect handler (registered elsewhere in
+-- this mod, with REAL run/afterDamage/charge logic -- verified one by
+-- one, not assumed) depends on ITS OWN move record's `effect` field
+-- actually pointing at that handler. This table is EXACTLY what used to
+-- be carried silently by moves_new.lua's own per-move `effect` field,
+-- copied onto the live record by the old generic wireMovepoolSubEffects
+-- loop -- removing that loop without this table would have silently
+-- broken every one of these (confirmed real regression caught and fixed
+-- in the same session it was introduced: re-audited every mod.content.
+-- move_effects:register call in this codebase after the fact, checked
+-- each one's actual body for real logic vs. an empty {kind="full"}
+-- stub-audit marker -- the empty ones (Acrobatics/Venoshock/Assurance/
+-- Heat Crash/Heavy Slam/Power Trip/Flail/Endeavor/Twister/Blizzard/
+-- Rapid Spin) need NO patch at all: their real mechanic runs
+-- unconditionally off ctx.move.id inside a registerDamageModifier entry
+-- or a battle.damage_dealt listener, never through this field -- and two
+-- more (GGD_MAXGUARD_EFFECT, GMAX_CUDDLE_EFFECT) belong to moves this mod
+-- or gmax_moves.lua already registers/patches directly, with no
+-- national_dex record at all, so they were never in scope here).
+local CUSTOM_EFFECT_PATCH = {
+  -- main.lua's own GALAR_TRAP_EFFECT (installMovepoolEffects above)
+  SANDTOMB = "GALAR_TRAP_EFFECT",
+  -- combat/modern_weather.lua
+  RAINDANCE = "GALAR_RAINDANCE_EFFECT",
+  SUNNYDAY = "GALAR_SUNNYDAY_EFFECT",
+  SANDSTORM = "GALAR_SANDSTORM_EFFECT",
+  SNOWSCAPE = "GALAR_SNOWSCAPE_EFFECT",
+  SOLARBEAM = "GALAR_SOLARBEAM_EFFECT",
+  -- combat/modern_movepool_damage.lua
+  DRAININGKISS = "GALAR_DRAIN_EFFECT_75",
+  HEALPULSE = "GALAR_HEALPULSE_EFFECT",
+  LIFEDEW = "GALAR_LIFEDEW_EFFECT",
+  SYNTHESIS = "GALAR_SYNTHESIS_EFFECT",
+  PAINSPLIT = "GALAR_PAINSPLIT_EFFECT",
+  BOUNCE = "GALAR_BOUNCE_EFFECT",
+  OUTRAGE = "GALAR_OUTRAGE_EFFECT",
+  ETERNABEAM = "GALAR_ETERNABEAM_EFFECT",
+  -- combat/modern_movepool_status.lua
+  FLATTER = "GMAX_FLATTER_EFFECT",
+  SWAGGER = "GMAX_SWAGGER_EFFECT",
+  -- combat/modern_status_effects.lua
+  ATTRACT = "GMAX_ATTRACT_EFFECT",
+  TAUNT = "GMAX_TAUNT_EFFECT",
+  TORMENT = "GMAX_TORMENT_EFFECT",
+  -- combat/modern_hazards.lua
+  STEALTHROCK = "GALAR_STEALTHROCK_EFFECT",
+  TOXICSPIKES = "GALAR_TOXICSPIKES_EFFECT",
+  -- combat/modern_movepool_stages.lua -- primary() (pure status moves)
+  AROMATICMIST = "GMAX_AROMATICMIST_EFFECT",
+  BULKUP = "GMAX_BULKUP_EFFECT",
+  CALMMIND = "GMAX_CALMMIND_EFFECT",
+  CHARGE = "GMAX_CHARGE_EFFECT",
+  CHARM = "GMAX_CHARM_EFFECT",
+  COIL = "GMAX_COIL_EFFECT",
+  CONFIDE = "GMAX_CONFIDE_EFFECT",
+  COSMICPOWER = "GMAX_COSMICPOWER_EFFECT",
+  COTTONGUARD = "GMAX_COTTONGUARD_EFFECT",
+  COTTONSPORE = "GMAX_COTTONSPORE_EFFECT",
+  DECORATE = "GMAX_DECORATE_EFFECT",
+  DRAGONDANCE = "GMAX_DRAGONDANCE_EFFECT",
+  EERIEIMPULSE = "GMAX_EERIEIMPULSE_EFFECT",
+  FAKETEARS = "GMAX_FAKETEARS_EFFECT",
+  HONECLAWS = "GMAX_HONECLAWS_EFFECT",
+  IRONDEFENSE = "GMAX_IRONDEFENSE_EFFECT",
+  METALSOUND = "GMAX_METALSOUND_EFFECT",
+  NASTYPLOT = "GMAX_NASTYPLOT_EFFECT",
+  NOBLEROAR = "GMAX_NOBLEROAR_EFFECT",
+  PLAYNICE = "GMAX_PLAYNICE_EFFECT",
+  ROCKPOLISH = "GMAX_ROCKPOLISH_EFFECT",
+  SCARYFACE = "GMAX_SCARYFACE_EFFECT",
+  SHIFTGEAR = "GMAX_SHIFTGEAR_EFFECT",
+  SWEETSCENT = "GMAX_SWEETSCENT_EFFECT",
+  TARSHOT = "GMAX_TARSHOT_EFFECT",
+  TEARFULLOOK = "GMAX_TEARFULLOOK_EFFECT",
+  -- combat/modern_movepool_stages.lua -- secondary() (damaging moves)
+  ACIDSPRAY = "GMAX_ACIDSPRAY_EFFECT",
+  ANCIENTPOWER = "GMAX_ANCIENTPOWER_EFFECT",
+  APPLEACID = "GMAX_APPLEACID_EFFECT",
+  BREAKINGSWIPE = "GMAX_BREAKINGSWIPE_EFFECT",
+  BUGBUZZ = "GMAX_BUGBUZZ_EFFECT",
+  BULLDOZE = "GMAX_BULLDOZE_EFFECT",
+  CLOSECOMBAT = "GMAX_CLOSECOMBAT_EFFECT",
+  CRUNCH = "GMAX_CRUNCH_EFFECT",
+  DRUMBEATING = "GMAX_DRUMBEATING_EFFECT",
+  ENERGYBALL = "GMAX_ENERGYBALL_EFFECT",
+  FIRELASH = "GMAX_FIRELASH_EFFECT",
+  FLAMECHARGE = "GMAX_FLAMECHARGE_EFFECT",
+  FLASHCANNON = "GMAX_FLASHCANNON_EFFECT",
+  GRAVAPPLE = "GMAX_GRAVAPPLE_EFFECT",
+  HAMMERARM = "GMAX_HAMMERARM_EFFECT",
+  LEAFSTORM = "GMAX_LEAFSTORM_EFFECT",
+  LEAFTORNADO = "GMAX_LEAFTORNADO_EFFECT",
+  LIQUIDATION = "GMAX_LIQUIDATION_EFFECT",
+  LUNGE = "GMAX_LUNGE_EFFECT",
+  METALCLAW = "GMAX_METALCLAW_EFFECT",
+  PLAYROUGH = "GMAX_PLAYROUGH_EFFECT",
+  POWERUPPUNCH = "GMAX_POWERUPPUNCH_EFFECT",
+  RAZORSHELL = "GMAX_RAZORSHELL_EFFECT",
+  ROCKSMASH = "GMAX_ROCKSMASH_EFFECT",
+  ROCKTOMB = "GMAX_ROCKTOMB_EFFECT",
+  SPIRITBREAK = "GMAX_SPIRITBREAK_EFFECT",
+  STEELWING = "GMAX_STEELWING_EFFECT",
+  STRUGGLEBUG = "GMAX_STRUGGLEBUG_EFFECT",
+  SUPERPOWER = "GMAX_SUPERPOWER_EFFECT",
+  -- combat/modern_movepool_stages.lua -- Clear Smog (its own registration)
+  CLEARSMOG = "GMAX_CLEARSMOG_EFFECT",
 }
 
--- A move id is "ours" (GalarGmaxDex owns its mechanics outright, per this
--- session's explicit decision) once it has a real, non-stub effect: either
--- a genuine secondary effect (a custom GALAR_*_EFFECT etc., not the plain
--- "NO_ADDITIONAL_EFFECT" stub placeholder), a real multiHit distribution,
--- a functionCode of "None" (the move never had a secondary effect to
--- begin with -- confirmed complete, not stubbed), or a functionCode of
--- "RemoveProtections" (Feint: its whole real "effect" is the bypassesProtect
--- data flag above, with no move_effects handler of its own to point
--- `effect` at -- same "nothing left to implement" reasoning as "None",
--- just carried by a different field).
-local function isMoveDataComplete(def)
-  return def.multiHit ~= nil
-    or def.effect ~= "NO_ADDITIONAL_EFFECT"
-    or def.functionCode == "None"
-    or def.functionCode == "RemoveProtections"
-    -- Protect/Detect's real effect is applied via a runtime :patch in
-    -- modern_combat_protect.lua (both ids, unconditionally), never
-    -- through this file's own effect field -- confirmed real bug caught
-    -- reviewing Phase 3's own report: without this, isMoveDataComplete
-    -- (and learnset_ownership.lua's identical mirror of this check) would
-    -- classify PROTECT/DETECT as still-stubbed and the move-availability
-    -- gate would block selecting either of them, despite both being
-    -- fully functional.
-    or def.functionCode == "ProtectUser"
-    -- Round's real bonus (double power right after an ally uses Round
-    -- the same turn) is a doubles-only mechanic -- this engine is
-    -- confirmed singles-only, so there is no ally slot for the
-    -- condition to ever read. Nothing left to implement, same
-    -- "structurally inert" reasoning as the exemptions above, not a
-    -- guessed-away stub.
-    or def.functionCode == "UsedAfterAllyRoundWithDoublePower"
+-- Completeness, read ENTIRELY from national_dex's own modern fields --
+-- no hardcoded per-move exemption list at all (confirmed directly:
+-- Feint and Round, the two moves that used to need a special-cased
+-- exemption under the old PBS-functionCode model, both come back
+-- completely empty on every one of these fields already -- neither
+-- "bypasses Protect" nor "doubles-only ally bonus" is a secondary-effect
+-- TYPE national_dex's schema tracks at all, so there was never anything
+-- here for them to be stubbed on in the first place).
+--
+-- flinchChance / confusion / multiHit are each handled GENERICALLY for
+-- every move in the whole roster now (installMovepoolEffects reads
+-- flinch/confusion live; this file's own wireMovepoolSubEffects derives
+-- and patches multiHit live) -- a move needing ONLY one of those three
+-- is complete with zero registration of its own. Anything else (a real
+-- non-confusion ailment, a stat change, drain, healing, or a multi-turn
+-- charge) needs a REAL custom effect actually registered and patched
+-- onto the live record by some file in this mod -- confirmed this
+-- already happens for e.g. Protect/Detect (modern_combat_protect.lua)
+-- and Trick Room (combat/trick_room.lua), both picked up here for free
+-- since this reads the LIVE record, not a static snapshot.
+local function isMoveDataComplete(liveRecord)
+  if not liveRecord then return false end
+  local hasAilment = liveRecord.ailment and liveRecord.ailment ~= "none"
+  local isConfusion = liveRecord.ailment == "confusion"
+  local hasStatChange = #(liveRecord.statChanges or {}) > 0
+  local hasDrain = (liveRecord.drain or 0) ~= 0
+  local hasHeal = (liveRecord.healing or 0) ~= 0
+  local hasMultiTurn = (liveRecord.minTurns or 0) > 0 or (liveRecord.maxTurns or 0) > 0
+  local needsCustomEngineering = (hasAilment and not isConfusion)
+    or hasStatChange or hasDrain or hasHeal or hasMultiTurn
+  if not needsCustomEngineering then return true end
+  return liveRecord.effect ~= nil and liveRecord.effect ~= "NO_ADDITIONAL_EFFECT"
 end
 
-local function registerNewMoves(mod, movesData)
-  installMovepoolEffects(mod, movesData)
-  local registered, overridden, skipped = 0, 0, 0
-  for id, def in pairs(movesData) do
-    local entry = { id = id }
-    for _, field in ipairs(MOVE_REGISTER_FIELDS) do
-      entry[field] = def[field]
-    end
-    -- moves_new.lua keeps PBS's own type spelling (e.g. "PSYCHIC"), same
-    -- convention national_dex's own types field uses -- translated here
-    -- the same way species registration already does via engineTypeId,
-    -- rather than registered raw. Missing this for moves specifically
-    -- (species typing was already correctly translated) is what produced the
-    -- "unresolved reference" validation error.
-    entry.type = engineTypeId(entry.type)
-    -- national_dex (a hard dependency) unconditionally registers its own
-    -- modern move roster, which overlaps a real chunk of these 175 --
-    -- both mods separately set out to fill the same "modern moves Gen 1
-    -- never had" gap (confirmed collision: HEAVYSLAM exists in both).
-    -- :register throws on an existing record-semantics entry (Registry.lua
-    -- :90-96), so a collision needs :register vs :override, not a retry.
-    -- Explicit user decision, this session: GalarGmaxDex owns move
-    -- mechanics outright, so a move we have REAL effect coverage for
-    -- always wins here, regardless of registration order -- :override
-    -- replaces whatever national_dex/native already set. Anything we
-    -- still have stubbed is left alone: overriding with an equally (or
-    -- more) incomplete version would be a straight regression.
-    if not mod.content.moves:get(id) then
-      mod.content.moves:register(id, entry)
-      registered = registered + 1
-    elseif isMoveDataComplete(def) then
-      mod.content.moves:override(id, entry)
-      overridden = overridden + 1
-    else
-      skipped = skipped + 1
+-- STANDING RULE, explicit and repeated user instruction: this mod NEVER
+-- registers a move, full stop -- no mod.content.moves:register/:override
+-- call writes base move data (name/type/category/power/accuracy/pp/
+-- priority) anywhere in this codebase. national_dex is the sole source
+-- for that data, unconditionally, for its entire roster. Confirmed
+-- exhaustively (2026-08-26, diffed every id, not sampled): all 179 ids
+-- this mod used to register already exist as full, real records in
+-- national_dex's own catalogue (764 total moves) -- registering/
+-- overriding them was pure, harmful duplication of data national_dex
+-- already owns, not a gap-filling measure.
+--
+-- moves_new.lua ITSELF is gone too (2026-08-26) -- its last three
+-- legitimate (non-registration) uses are all replaced with live national
+-- _dex reads: flinch/confuse chance (installMovepoolEffects above),
+-- highCrit/multiHit (derived below from national_dex's own critRate/
+-- minHits/maxHits), and move-completeness classification (isMoveDataComplete
+-- above, reading national_dex's own modern fields directly). Applied
+-- uniformly across national_dex's ENTIRE roster now, not just the 179
+-- ids this mod's own old data file happened to cover.
+local function wireMovepoolSubEffects(mod)
+  installMovepoolEffects(mod)
+  local nationalDex = mod.find and mod.find("national_dex")
+  assert(nationalDex and nationalDex.exports and nationalDex.exports.moveById
+      and nationalDex.exports.listMoves,
+    "wireMovepoolSubEffects: national_dex must be loaded first")
+  local moveById = nationalDex.exports.moveById
+  local patched = 0
+  for _, id in ipairs(nationalDex.exports.listMoves()) do
+    if mod.content.moves:get(id) then
+      local ok, info = pcall(moveById, id)
+      if ok and info then
+        local patch = {}
+        if BYPASSES_PROTECT[id] then patch.bypassesProtect = true end
+        if CUSTOM_EFFECT_PATCH[id] then patch.effect = CUSTOM_EFFECT_PATCH[id] end
+        -- critRate is the number of +1 crit-stage bumps the move itself
+        -- grants (confirmed: Cross Poison critRate=1, a real high-crit
+        -- move; Axe Kick/Baddy Bad critRate=0, ordinary) -- >=1 maps onto
+        -- this engine's own boolean highCrit field.
+        if (info.critRate or 0) >= 1 then patch.highCrit = true end
+        -- multiHit: a fixed count (minHits==maxHits, e.g. Double Hit's
+        -- 2-2) is just that count twice; the real 2-5 range (Bullet Seed,
+        -- Rock Blast, Double Iron Bash) is the well-known, generation-
+        -- independent 3/8·3/8·1/8·1/8 weighted distribution -- confirmed
+        -- directly against national_dex's OWN effect text for these
+        -- moves ("Has a 3/8 chance each to hit 2 or 3 times, and a 1/8
+        -- chance each to hit 4 or 5 times"), not guessed. Any other
+        -- min/max combination this roster doesn't currently use falls
+        -- through to an unweighted flat range rather than silently
+        -- guessing a distribution with no confirmed source.
+        local minHits, maxHits = info.minHits or 0, info.maxHits or 0
+        if minHits > 0 and maxHits > 0 then
+          if minHits == maxHits then
+            patch.multiHit = { minHits, minHits }
+          elseif minHits == 2 and maxHits == 5 then
+            patch.multiHit = { 2, 2, 2, 3, 3, 3, 4, 5 }
+          else
+            local range = {}
+            for n = minHits, maxHits do range[#range + 1] = n end
+            patch.multiHit = range
+          end
+        end
+        if next(patch) then
+          mod.content.moves:patch(id, patch)
+          patched = patched + 1
+        end
+      end
     end
   end
-  if overridden > 0 or skipped > 0 then
-    mod.log:info(
-      "galar_gmax_dex: moves: %d newly registered, %d overrode an existing (national_dex/native) registration with our complete implementation, %d left alone (still stubbed here)",
-      registered, overridden, skipped)
-  end
-  return registered
+  return patched
 end
 
 -- =============================================================================
@@ -346,9 +477,14 @@ local function installGigantamaxMoves(mod, gmaxMovesData, gmaxData)
   end
   -- gmax_moves.lua keeps PBS's own type spelling too (e.g. "PSYCHIC" for
   -- GMAXGRAVITAS) -- translated into a fresh table here before handing it
-  -- to dynamax, the same engineTypeId step registerNewMoves applies to
-  -- moves_new.lua, rather than mutating the loaded gmax_moves.lua table
-  -- in place. This mod is responsible for feeding dynamax engine-ready
+  -- to dynamax, the same engineTypeId helper applied elsewhere, rather
+  -- than mutating the loaded gmax_moves.lua table in place. Gigantamax
+  -- moves are genuinely this mod's own invented content -- no national_dex
+  -- equivalent exists for them at all, so registering them here (unlike
+  -- the Phase 2 sub-effect-only approach above) is correct, not a
+  -- violation of the "never register a move" rule, which is specifically
+  -- about moves national_dex already owns. This mod is responsible for
+  -- feeding dynamax engine-ready
   -- data; dynamax trusts what it's given rather than knowing about
   -- PBS-specific naming quirks itself.
   local translatedMoves = {}
@@ -853,16 +989,18 @@ return function(mod)
     "galar_gmax_dex: patched evolutions onto %d species (%d species skipped unregistered, %d rows dropped for an unregistered target) (Phase 1)",
     patchedEvolutions, skippedSpecies, droppedRows)
 
-  -- ------- Phase 2: movepool -------
-  local movesData = loadSibling(mod, "combat/moves_new.lua")
-  local movesRegistered = registerNewMoves(mod, movesData)
+  -- ------- Phase 2: movepool sub-effects -------
+  -- national_dex registers every one of these moves' base data already --
+  -- this mod never does (see wireMovepoolSubEffects's own header for the
+  -- full standing rule). No moves_new.lua load at all anymore -- everything
+  -- below reads national_dex live.
+  local movesPatched = wireMovepoolSubEffects(mod)
   -- Exported so combat/learnset_ownership.lua's usability gate reads the
-  -- SAME completeness check registerNewMoves itself uses, not a second
+  -- SAME completeness check wireMovepoolSubEffects itself uses, not a second
   -- copy -- confirmed drift bug caught this session: learnset_ownership.lua
-  -- had its own independent inline duplicate of this logic, missing both
-  -- the RemoveProtections and ProtectUser special cases added here, which
-  -- would have kept blocking Feint/Protect/Detect from ever being taught
-  -- even after they became genuinely complete.
+  -- had its own independent inline duplicate of this logic, which would
+  -- have kept blocking moves from ever being taught even after they became
+  -- genuinely complete.
   mod.exports.isMoveDataComplete = isMoveDataComplete
 
   -- Learnset ownership switch (explicit user decision, this session):
@@ -871,11 +1009,10 @@ return function(mod)
   -- learnset/levelMoves field -- see learnset_ownership.lua's own header
   -- for why that field's filtering can't reflect this mod's own
   -- completeness); GalarGmaxDex gates USABILITY on its own move-effect
-  -- completeness. Replaces the old combat/learnsets_data.lua's own
-  -- self-authored 51-species-only table -- superseded, no longer loaded,
-  -- left on disk rather than deleted since nothing else references it.
+  -- completeness, now judged entirely off the live registry (see
+  -- learnset_ownership.lua's own header for the full migration).
   local installLearnsetOwnership = loadSibling(mod, "combat/learnset_ownership.lua")
-  local learnsetOwnership = installLearnsetOwnership(mod, movesData)
+  local learnsetOwnership = installLearnsetOwnership(mod)
   learnsetOwnership.reapplyLearnsets()
   -- TEMPORARILY DISABLED (2026-08-19, spawn-diagnostic session): same
   -- "content is frozen after load" crash as reapplySpritePacks above --
@@ -885,7 +1022,7 @@ return function(mod)
   -- mod.events:on("save.loaded", learnsetOwnership.reapplyLearnsets)
   -- mod.events:on("mod.options_changed", learnsetOwnership.reapplyLearnsets)
 
-  mod.log:info("galar_gmax_dex: registered %d new moves (Phase 2)", movesRegistered)
+  mod.log:info("galar_gmax_dex: patched sub-effects onto %d moves (Phase 2, no base data registered)", movesPatched)
 
   -- ------- Phase 3: Gigantamax moves and forms -------
   -- TEMPORARILY DISABLED (2026-08-20, explicit user instruction, removing
@@ -1105,11 +1242,14 @@ return function(mod)
   local installTrickRoom = loadSibling(mod, "combat/trick_room.lua")
   installTrickRoom(mod)
 
-  -- Phase 1 of the move-effect completion pipeline: wires moves_new.lua's
-  -- stat-stage-change stubs to modern_combat.lua's changeStage primitive.
-  -- Split into its own sibling file rather than grown into modern_combat.lua
-  -- (~56 registrations) -- see that file's own header for the full
-  -- grounding. Must load after modern_combat.lua (consumes its exports).
+  -- Phase 1 of the move-effect completion pipeline: stat-stage-change
+  -- stubs wired to modern_combat.lua's changeStage primitive via their own
+  -- hardcoded GMAX_*_EFFECT registrations + move patches -- no runtime
+  -- dependency on moves_new.lua, which was only ever this file's original
+  -- discovery source for which moves needed this. Split into its own
+  -- sibling file rather than grown into modern_combat.lua (~56
+  -- registrations) -- see that file's own header for the full grounding.
+  -- Must load after modern_combat.lua (consumes its exports).
   local installModernMovepoolStages = loadSibling(mod, "combat/modern_movepool_stages.lua")
   installModernMovepoolStages(mod)
 
@@ -1130,8 +1270,9 @@ return function(mod)
   -- Phase 3 of the move-effect completion pipeline: Metal Burst/Mirror
   -- Coat (Detect's patch lives in modern_combat_protect.lua itself, next
   -- to its own PROTECT patch; Feint's bypassesProtect is plain moves_new
-  -- .lua data + a MOVE_REGISTER_FIELDS entry above -- neither needs this
-  -- file). Loaded after modern_combat_protect.lua (installed above) so its
+  -- .lua data, patched onto the live FEINT record by wireMovepoolSubEffects
+  -- above -- neither needs this file). Loaded after modern_combat_protect.lua
+  -- (installed above) so its
   -- target.protected checks see a real flag either way, though load order
   -- between the two doesn't actually matter here -- both only read/write
   -- battler fields at battle time, never at load time.
