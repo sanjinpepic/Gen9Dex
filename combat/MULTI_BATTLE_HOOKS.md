@@ -1,0 +1,181 @@
+# Multi-battler combat — contract for a future doubles/triples/asymmetric mod
+
+This mod owns combat resolution end to end (damage math, sub-effects, turn
+order) for whatever battlers exist. This document is the spec for a future
+mod that adds real multi-battler support (doubles, triples, or asymmetric
+formats like 4v1 or 1v5) — what you get from us for free, what the actual
+integration contract is, and what genuinely doesn't exist yet and needs its
+own engine change.
+
+The core principle, stated precisely: **we own combat resolution — the
+move, the target(s), the priority, the Speed, the Trick Room state, the
+RNG, the damage math, the ordering — you own only which battlers exist and
+what each one has chosen to do.** A battler's chosen move and chosen
+target(s) are already attached to whatever structure represents "battler X
+is acting this turn" the moment it's submitted (the same shape the native
+engine's own `action = { kind = "move", move = moveId, ... }` already is)
+— so you don't hand us a separately-computed parallel array of priority
+numbers, Speed numbers, a Trick Room flag, and an RNG function. You hand us
+*who is acting*. Everything else, we already have or already own.
+
+## What you get for free, no wiring needed
+
+`useMove(attacker, defender, moveId)` → `hitOnce` → `battle.damage` →
+`dealDamage` is already generic over who's fighting. None of it hardcodes
+`battle.player`/`battle.enemy` — `attacker`/`defender` are parameters
+throughout. If your mod calls `battle:useMove(someBattler, someTarget,
+moveId)` for any two battlers you control, it flows through the exact same
+pipeline as today's player-vs-enemy fights — STAB, Tera, Protect/Max
+Guard, every `registerDamageModifier` entry, all of it — automatically.
+
+You do not need to ask us anything to get correct damage output for a
+battler we've never heard of. This is already true today.
+
+## The actual integration contract — battler identity only
+
+**Not yet built** (see "What's still missing" below for exactly why), but
+this is the target shape, settled through direct discussion rather than
+guessed at:
+
+```lua
+mod.exports.resolveTurnActions(battle, actingBattlers) -> nil
+```
+
+- `actingBattlers`: a flat list of battler references — nothing else. No
+  `priority`, no `speed`, no `move`, no `targets`. Each battler's own
+  chosen move and target(s) are read directly off whatever field the
+  submission step already populated on it (the same place the native
+  engine already keeps `action.move` for the player today) — not
+  re-supplied in a second, parallel structure.
+- We derive priority from the battler's own chosen move. We derive Speed
+  from the battler's own current stats/stages/status — the same read we
+  already do to compute its damage. We derive Trick Room from our own
+  tracked state (see "Trick Room ownership" below). We derive RNG from
+  `battle:roller()`, which we already have direct access to.
+- We process one action at a time, in our own correctly-derived order,
+  calling our own `battle:useMove(...)` pipeline for each. Because we
+  compute each hit's real damage ourselves (see `combat/modern_combat.lua`),
+  we know with certainty — the instant we compute it, not by predicting
+  ahead of the roll that produced it — whether it drops a target below 0
+  HP or changes a stat stage. That knowledge updates who still counts as
+  a valid remaining actor *before* we decide who's next, which is what
+  makes fainting mid-turn and Speed drops mid-turn resolve correctly
+  without ever guessing an outcome in advance.
+
+No caller-side computation, no caller-side comparator, no caller-side RNG
+plumbing. Tell us who's acting; we do the rest, the same way `useMove`
+already asks nothing of a caller beyond attacker/target/move today.
+
+## Trick Room ownership
+
+Trick Room is not an input a caller provides — it is a real move
+(`TRICKROOM`, already registered by National Dex, currently sitting at
+`NO_ADDITIONAL_EFFECT`) that this mod will own as a sub-effect, the exact
+procedure `combat/SUBEFFECTS.md` describes: `:patch()` it with a real
+effect, track activation/duration/expiry as our own battle-scoped state.
+Once that exists, `resolveTurnActions` (and today's `battle.turn_order`
+wiring) read it directly. Not yet built — flagged here so it isn't
+mistaken for already covered.
+
+## The internal primitive underneath this: `computeTurnOrder`
+
+`combat/turn_order.lua` also exports a lower-level function:
+
+```lua
+mod.exports.computeTurnOrder(actors, opts) -> orderedActors
+```
+
+This is **not** the integration point described above — it's the pure
+comparator `resolveTurnActions` (and today's 2-battler `battle.turn_order`
+wrap) use internally once priority/Speed/Trick-Room/RNG have already been
+derived. It takes already-resolved numbers (`{ id, priority, speed }` per
+actor, `opts.trickRoom`, `opts.roller`) and returns them in order —
+priority bracket, then Trick-Room-aware Speed, then a real Fisher-Yates
+shuffle (seeded from the roller) for genuine ties, never left to
+comparator luck.
+
+It stays a plain, stateless, battle-object-free function on purpose —
+reusable, testable in isolation, and asymmetric-ready by construction: it
+has no concept of "sides" or "how many per side" anywhere in it, so 1v1,
+2v2, 3v3, 4v1, 1v5, and 4vN all go through the identical code path with no
+special-casing. A caller integrating with this mod should reach for
+`resolveTurnActions` once it exists, not this — calling this directly
+means you're the one deriving priority/Speed/Trick-Room/RNG yourself,
+exactly the caller-side computation the contract above exists to avoid.
+
+## What's still missing — stated honestly, not papered over
+
+Even with `resolveTurnActions` fully built, it cannot be exercised yet
+because two engine-level gaps sit underneath it, neither reachable from
+mod code as it stands:
+
+1. **No mid-turn hook exists.** `gen2/Battle.lua`'s own turn-resolution
+   function (`runTurn`) is a `local function`, not `Battle.runTurn` — it
+   is not exported and cannot be wrapped by any mod. The two actions it
+   runs (`playerAttack()`/`enemyAttack()`) are themselves local closures
+   *defined inside* it — doubly unreachable. There is no code running
+   between the first action finishing and the second one starting that a
+   mod could attach to. `battle.turn_order` is the only exposed hook, and
+   it fires exactly once, before either action executes.
+
+2. **No multi-battler data model exists.** `battle.player`/`battle.enemy`
+   are the only two battler slots anywhere in this engine's Gen 2 Battle
+   class — not an array, two fixed fields. There is no third or fourth
+   slot to reorder into in the first place.
+
+**What a real doubles/triples/asymmetric mod needs to bring**, since
+neither of these can be added from outside `gen1recomp-dev` itself:
+
+- A genuine queue or ordered-actor-list concept, replacing the two fixed
+  fields, sized to however many battlers the format needs (2, 3, or an
+  asymmetric count), with each battler's own chosen move/target(s)
+  attached to it at submission time.
+- Its own turn-resolution loop — almost certainly meaning monkeypatching
+  the *public* `Battle:takeTurn` method (unlike `runTurn`, this one is
+  reachable) and reimplementing what it currently does natively: switch
+  handling, item handling, run-away handling, obedience checks, Struggle
+  substitution, charge/locked-move state, disabled-move checks, the
+  fainted-actor skip, wild Roar/Whirlwind ending the battle mid-turn —
+  all of it, for however many slots exist. This is a genuine fork of
+  engine logic, not an addition to it — real, substantial work, not a
+  hook request.
+- A real, N-way `Battle:sideOf(mon)`. The native one is a hard binary --
+  `(mon == self.player) and "player" or "enemy"`, literally a two-way
+  ternary -- and `dealDamage` and other native code call it internally to
+  tag emitted events (`battle:emit({kind=..., side=..., ...})`). Feed the
+  existing pipeline a third or fourth battler that isn't literally
+  `self.player`, and every event about it gets silently tagged
+  `"enemy"` regardless of which real side it's on. This doesn't affect
+  `resolveTurnActions`'s own correctness at all -- damage math and
+  ordering never consult `side` -- but a custom multi-battle combat scene
+  consuming the event stream to decide *what to draw where* would render
+  wrong. `sideOf` is a public method (unlike `runTurn`), reachable and
+  overridable -- extending it to return a real side/team index instead of
+  a binary string is part of the same fork, not a separate ask.
+
+Once that loop exists and calls `mod.exports.resolveTurnActions(battle,
+actingBattlers)` per turn (built here, against that loop, once it's real),
+the whole re-sort-after-every-action mechanic (PR #6100's actual rule)
+falls out for free — it's already how `resolveTurnActions` is specified
+to work.
+
+## Also not built yet: spread-move damage reduction
+
+Real Gen 9 rule: a move that hits more than one target the same turn
+(Earthquake, Surf, Discharge, etc. in an actual multi-battler format)
+deals 0.75x damage to each target hit, versus full damage against a
+single target. TODO, flagged in `modern_combat.lua`'s own
+`registerDamageModifier` header — needs a target COUNT on the damage
+`ctx`, which nothing in this 2-battler engine can ever produce above 1.
+Same root cause as everything else in this document: no multi-battler
+data model exists yet.
+
+## The actual ask, if you're building this
+
+Bring the battler slots and the turn-resolution loop. Call
+`mod.exports.resolveTurnActions(battle, actingBattlers)` once it exists,
+handing us only battler identity — not priority, not Speed, not targets,
+not a comparator. Everything about *what a battler is* and *when it
+structurally gets a turn* is your mod's own responsibility to build;
+everything about *what actually happens once it's decided to act* is
+already ours, and stays ours through this one, minimal seam.

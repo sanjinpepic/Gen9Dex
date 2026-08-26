@@ -92,10 +92,11 @@ return function(mod)
   local displayNameFor = mod.exports.displayNameFor
   local currentWeather = mod.exports.currentWeather
   local setWeather = mod.exports.setWeather
+  local canSetWeather = mod.exports.canSetWeather
   local curTypesOf = mod.exports.curTypesOf
   local isGen2Battle = mod.exports.isGen2Battle
   assert(normalize and displayNameFor and currentWeather and setWeather
-      and curTypesOf and isGen2Battle,
+      and canSetWeather and curTypesOf and isGen2Battle,
     "modern_weather: combat/modern_combat.lua must load first")
 
   ------------------------------------------------------------------
@@ -116,6 +117,21 @@ return function(mod)
   -- 1898, a cart-specific quirk), but this project's cross-gen rule
   -- prefers the current, uniform Showdown behavior.
   ------------------------------------------------------------------
+  -- Real item per weather (confirmed against national_dex's own item
+  -- catalogue, 0.31.0+: DAMPROCK/HEATROCK/SMOOTHROCK/ICYROCK, each "Held:
+  -- [weather] by the holder lasts 8 rounds instead of 5"). Icy Rock is the
+  -- real Snow extender in current Showdown (PokeAPI's own item text still
+  -- says "hailstorm" -- pre-Gen-9 wording, not re-verified for the rename;
+  -- the item id and the 5->8 mechanic are what's confirmed).
+  local WEATHER_EXTEND_ITEM = {
+    RAIN = "DAMPROCK", SUN = "HEATROCK", SAND = "SMOOTHROCK", SNOW = "ICYROCK",
+  }
+  local resolveFieldDuration = mod.exports.resolveFieldDuration
+  local FIELD_BASE_TURNS = mod.exports.FIELD_BASE_TURNS
+  local FIELD_EXTENDED_TURNS = mod.exports.FIELD_EXTENDED_TURNS
+  assert(resolveFieldDuration and FIELD_BASE_TURNS and FIELD_EXTENDED_TURNS,
+    "modern_weather: combat/field_duration.lua must load first")
+
   local function weatherStarter(effectId, key, startText)
     mod.content.move_effects:register(effectId, {
       kind = "primary",
@@ -124,7 +140,24 @@ return function(mod)
         if currentWeather(n.battle, n.gen2) == key then
           return { romText(n.battle.data, "_ButItFailedText", "But, it failed!") }
         end
-        setWeather(n.battle, n.gen2, key)
+        -- Phase 1.5: Desolate Land/Primordial Sea/Delta Stream's own
+        -- irreplaceable field state blocks every plain weather move the
+        -- same way it blocks a plain weather ability -- see
+        -- modern_combat.lua's own canSetWeather header for the full rule.
+        -- Boss-fight "sun" protection rides the same check (setterMon
+        -- lets it tell the boss's own side from the player's).
+        if not canSetWeather(n.battle, false, n.user) then
+          return { romText(n.battle.data, "_ButItFailedText", "But, it failed!") }
+        end
+        -- Gen 1 has no held-item concept in this engine at all (confirmed,
+        -- modern_items.lua's own itemOf helper: `gen2 and who.item or nil`
+        -- -- Gen 1's own battler wrapper has no .item field to read safely)
+        -- -- gated here rather than inside resolveFieldDuration itself, so
+        -- that shared primitive stays engine-agnostic and a Gen 1 call
+        -- never risks reading an unrelated field off the wrapper.
+        local turns = resolveFieldDuration(n.gen2 and n.user or nil,
+          FIELD_BASE_TURNS, FIELD_EXTENDED_TURNS, WEATHER_EXTEND_ITEM[key])
+        setWeather(n.battle, n.gen2, key, turns, n.user)
         return { Strings(startText) }
       end,
     })

@@ -69,14 +69,17 @@ return function(mod, movesData)
 
   local ndModeledCache = {}
   -- Anything not in movesData is either a Gen 1-native move (base engine,
-  -- always fully implemented, no functionCode baggage to check) or a
-  -- national_dex-registered move GalarGmaxDex has no opinion on at all.
-  -- For the latter, national_dex's own per-generation modeled flag is the
-  -- only other signal that exists -- not authoritative for OUR future
-  -- work (see header), but a reasonable fallback for moves we don't own.
-  -- A move unknown to both sources is assumed usable: nothing to gate on,
-  -- and refusing to teach a move neither side has an opinion about would
-  -- be a worse failure mode than teaching it.
+  -- always fully implemented, no functionCode baggage to check), a move
+  -- national_dex registered that some OTHER file in this mod later gave
+  -- a real implementation via a runtime :patch (checked below, against
+  -- the live registry -- trick_room.lua's own TRICKROOM patch is exactly
+  -- this case), or one GalarGmaxDex genuinely has no opinion on at all.
+  -- Only for that last, genuine case does national_dex's own per-
+  -- generation modeled flag apply -- not authoritative for OUR work (see
+  -- header), but a reasonable fallback for moves we truly don't own. A
+  -- move unknown to every source is assumed usable: nothing to gate on,
+  -- and refusing to teach a move nobody has an opinion about would be a
+  -- worse failure mode than teaching it.
   --
   -- Confirmed real bug, live-reported and fixed here: this comment always
   -- described native moves as "always fully implemented," but the code
@@ -95,6 +98,38 @@ return function(mod, movesData)
   local function isUsable(moveId)
     if ourCompleteness[moveId] ~= nil then return ourCompleteness[moveId] end
     if ndModeledCache[moveId] ~= nil then return ndModeledCache[moveId] end
+    -- Confirmed real bug, user-reported: a move national_dex registered
+    -- but never appeared in movesData (moves_new.lua's own static table)
+    -- can still get a REAL GalarGmaxDex implementation later, patched
+    -- straight onto the live registry by another file in this mod (e.g.
+    -- trick_room.lua's mod.content.moves:patch("TRICKROOM", {effect=...})
+    -- ). national_dex only registers the move; it never decides whether
+    -- OUR implementation of it passes -- that's this file's own job, the
+    -- same as every move that WAS in movesData. The check above (via
+    -- ourCompleteness) only ever looked at the static table as it stood
+    -- at mod-load time, before any later patch from a sibling file like
+    -- trick_room.lua could apply -- so a since-patched move fell straight
+    -- through to national_dex's own gen1/gen2EffectModeled flag, which is
+    -- a frozen snapshot from national_dex's OWN build step (this file's
+    -- own header already established that flag has zero runtime awareness
+    -- of any other mod) and has no way to ever reflect a patch applied
+    -- after it. Reading the LIVE registry here (mod.content.moves:get,
+    -- confirmed real: src/mods/Loader.lua:896-899) picks up every patch
+    -- applied before this runs, from ANY file in this mod, checked with
+    -- the identical isMoveDataComplete criteria the static table itself
+    -- used -- not a separate, looser standard. functionCode does not
+    -- survive onto the live registry (main.lua's own comment on
+    -- isMoveDataComplete: filtered out before :register), so this only
+    -- catches completeness signaled through effect/multiHit -- exactly
+    -- what a runtime :patch like trick_room.lua's own sets, and exactly
+    -- the gap that left Trick Room gated as "not ready" despite
+    -- trick_room.lua's real 5-turn/-7-priority/toggle-off implementation
+    -- already being installed.
+    local liveOk, liveDef = pcall(mod.content.moves.get, mod.content.moves, moveId)
+    if liveOk and liveDef and isMoveDataComplete(liveDef) then
+      ndModeledCache[moveId] = true
+      return true
+    end
     local ok, info = pcall(ndExports.moveById, moveId)
     local modeled = true
     if ok and info then

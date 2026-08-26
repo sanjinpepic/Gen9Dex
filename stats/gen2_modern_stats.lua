@@ -140,10 +140,39 @@ return function(mod)
     ModernStats.generateNature(mon)
   end
 
+  -- Player-side ability generation -- a real, confirmed gap: every one of
+  -- this file's own generation calls above (generateGen2Wild/
+  -- generateGen2TrainerMon), plus wild_modern_ivs.lua/trainer_modern_stats
+  -- .lua, only ever ran on the OPPONENT's mon. The player's own party never
+  -- got ModernStats.generateAbility called on it at all, so battle.player
+  -- .ability stayed nil for essentially every real player-owned Pokemon --
+  -- confirmed by grepping every call site of generateAbility in this mod
+  -- before writing this. Explicit user rule: a caught Pokemon's ability is
+  -- an individually SAVED property, generated once and kept from then on
+  -- -- exactly what generateAbility's own idempotent contract already
+  -- guarantees (only fills mon.ability when it's genuinely nil, never
+  -- re-rolls an existing one), so calling it here on every battle start is
+  -- safe to run every single battle without ever disturbing an ability a
+  -- mon already has -- from a prior battle, or from an explicit swap via
+  -- ModernStats.toggleHiddenAbility/toggleRegularAbility.
+  --
+  -- Only the ability is generated here, not IVs/EVs/stats/nature -- unlike
+  -- the opponent side, the player's own party already carries its real,
+  -- earned stats; nothing else about it should be touched at battle start.
+  local function generatePlayerAbilities(battle)
+    local nd = nationalDexExports()
+    for _, mon in ipairs(battle.party or {}) do
+      if type(mon) == "table" then
+        ModernStats.generateAbility(mon, ModernStats.resolveAbilities(mon.species, nd))
+      end
+    end
+  end
+
   mod.events:on("battle.started", function(ev)
     local battle = ev and ev.battle
     if not isGen2Battle(battle) then return end
     local ok2, err = pcall(function()
+      generatePlayerAbilities(battle)
       if ev.kind == "wild" then
         generateGen2Wild(battle)
       elseif ev.kind == "trainer" then

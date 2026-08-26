@@ -171,6 +171,30 @@ return function(mod)
   -- clobbering the other's fields -- but stating it here removes any
   -- doubt rather than trusting that merge silently, given the live
   -- symptom pointed straight at priority.
+  --
+  -- Called SYNCHRONOUSLY, right here, not deferred to any event --
+  -- confirmed directly (src/mods/Loader.lua:1717 registry:freeze() runs
+  -- BEFORE :1728's "mods.loaded" emit) that a mod.content.moves:patch
+  -- call from a "mods.loaded" handler hits an already-frozen registry.
+  -- A same-day attempt to defer this call there was reverted for exactly
+  -- that reason -- it silently no-opped every time (Registry:patch on a
+  -- frozen registry throws, and the event dispatcher's own protective
+  -- pcall swallowed it with no visible error), confirmed by the Z-Move
+  -- heuristic's own patched-count dropping from a real number to 0 and
+  -- this block's own diagnostic never printing at all.
+  --
+  -- The real fix for battle_forms's load order is `battle_forms` now
+  -- listed in THIS mod's own manifest.json optional_dependencies (see
+  -- that file) -- a real graph edge (Loader.lua:739-749) that makes
+  -- battle_forms's entire entry function, including every move it
+  -- registers, finish running before this mod's own entry function ever
+  -- starts, regardless of the two mods' raw priority numbers. battle_forms
+  -- ALSO lists this mod as ITS OWN optional dependency, so this creates a
+  -- genuine two-mod cycle -- confirmed the loader breaks exactly this
+  -- shape deliberately rather than failing (Loader.lua:766-774,
+  -- "optional dependency loop broken at %s", alphabetically-first id
+  -- wins) -- "battle_forms" sorts before "g9-battle-engine-beta", so the
+  -- cycle resolves in the direction this file's own patch below needs.
   mod.content.moves:patch(MAX_GUARD_MOVE_ID, { effect = MAX_GUARD_EFFECT_ID, priority = 4 })
 
   -- Diagnostic: confirms both this patch and Registry's own fold

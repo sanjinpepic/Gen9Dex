@@ -140,6 +140,85 @@ function ModernStats.resolveAbilities(species, nationalDexExports)
   return out
 end
 
+-- The hidden-slot ability (slot 3, hidden=true) for a species, or nil if
+-- it has none / national_dex is absent -- the one entry
+-- ModernStats.resolveAbilities deliberately excludes. Same national_dex
+-- record shape and nil-safety contract as that function.
+function ModernStats.resolveHiddenAbility(species, nationalDexExports)
+  if type(nationalDexExports) ~= "table" or (nationalDexExports.apiVersion or 0) < 1
+      or type(nationalDexExports.statsBySpecies) ~= "function" then
+    return nil
+  end
+  local ok, rec = pcall(nationalDexExports.statsBySpecies, species)
+  if not (ok and type(rec) == "table" and type(rec.abilities) == "table") then
+    return nil
+  end
+  for _, entry in ipairs(rec.abilities) do
+    if type(entry) == "table" and entry.hidden and type(entry.name) == "string" then
+      return entry.name
+    end
+  end
+  return nil
+end
+
+-- Public swap API -- explicit user request: "expose an api for changing
+-- hidden abilities <-> to normal abilities. if used by another mod, we
+-- swap them." Reachable by any mod via mod:find("g9-battle-engine-beta")
+-- .exports.ModernStats.toggleHiddenAbility(...) (main.lua already exposes
+-- the whole ModernStats table, no separate wiring needed). This module
+-- owns HOW the swap works; deciding WHEN it happens -- an item, a move
+-- effect, a debug command -- is entirely the calling mod's own business,
+-- same "own the rules, not who triggers them" split as everywhere else in
+-- this mod's own combat/ files.
+--
+-- Currently on the hidden ability -> swaps to the species' first regular
+-- ability (slot 1). Currently on any regular ability (or no ability at
+-- all) -> swaps to the hidden one, if the species has one. Returns
+-- (changed, newAbility): changed is false (newAbility = mon.ability,
+-- unchanged) when there's genuinely nothing to swap to in that direction
+-- (no hidden ability on this species, or no regular ability to fall back
+-- to) -- distinguishable from "swapped" without the caller having to
+-- compare the ability name itself (a species' hidden and slot-1
+-- abilities are never the same real ability, so that comparison would
+-- work too, but this is the honest signal rather than an inference).
+function ModernStats.toggleHiddenAbility(mon, species, nationalDexExports)
+  if type(mon) ~= "table" then return false, nil end
+  local hidden = ModernStats.resolveHiddenAbility(species, nationalDexExports)
+  if mon.ability == hidden and hidden ~= nil then
+    local regular = ModernStats.resolveAbilities(species, nationalDexExports)
+    if not regular[1] then return false, mon.ability end
+    mon.ability = regular[1]
+    return true, mon.ability
+  end
+  if not hidden then return false, mon.ability end
+  mon.ability = hidden
+  return true, mon.ability
+end
+
+-- Public swap API -- Ability Capsule's own equivalent, cycling ability
+-- slot 1 <-> slot 2 specifically. A distinct, non-overlapping swap from
+-- toggleHiddenAbility above (Ability Patch's own job) -- real Ability
+-- Capsule never touches a mon currently on its hidden ability, and this
+-- mirrors that: fails (changed=false) rather than falling back to a
+-- regular ability, so a caller wanting "off hidden, onto a regular one"
+-- reaches for toggleHiddenAbility instead, not this. Same (changed,
+-- newAbility) return contract as toggleHiddenAbility, same "own the rules,
+-- not who triggers them" split.
+--
+-- Also fails when the species doesn't have two distinct regular abilities
+-- to cycle between (many species only ever had one) -- real Ability
+-- Capsule has nothing to do there either.
+function ModernStats.toggleRegularAbility(mon, species, nationalDexExports)
+  if type(mon) ~= "table" then return false, nil end
+  local regular = ModernStats.resolveAbilities(species, nationalDexExports)
+  if not (regular[1] and regular[2]) then return false, mon.ability end
+  if mon.ability ~= regular[1] and mon.ability ~= regular[2] then
+    return false, mon.ability
+  end
+  mon.ability = (mon.ability == regular[1]) and regular[2] or regular[1]
+  return true, mon.ability
+end
+
 -- "A pokemon must always have an ability, if it doesn't have one, we
 -- generate it... ability 1 and 2 are picked by random, 50%/50% of having
 -- either. Only 1 ability per pokemon." Idempotent, same contract as

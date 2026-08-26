@@ -131,6 +131,14 @@ return function(mod)
     if target.confusedTurns or target.substituteHP then
       return nil
     end
+    -- Boss-fight "softStatus" protection: gated here directly, not via
+    -- battle.damage_dealt -- Flatter/Swagger are power=0 status moves,
+    -- so that event never fires for them at all (see combat/
+    -- boss_fight_status.lua's own header for the full reasoning).
+    if target == n.battle.enemy and mod.exports.bossFightHas
+        and mod.exports.bossFightHas(n.battle, "softStatus") then
+      return nil
+    end
     target.confusedTurns = n.battle.rng(2, 5)
     return Strings("%s\nbecame confused!", displayNameFor(n.battle, target, n.gen2))
   end

@@ -17,7 +17,9 @@
   "dependencies": [
     "national_dex"
   ],
-  "optional_dependencies": [],
+  "optional_dependencies": [
+    "battle_forms"
+  ],
   "description": "4 gimmicks, updated battle engine -- moves/stats/gigantamax combat only, no sprites, no overworld spawns, no followers (see g9-battle-engine for those).",
   "options_schema": "options.lua",
   "repo": "https://github.com/tectorifter/Gen9Dex"

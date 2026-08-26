@@ -78,58 +78,115 @@
 -- for, or this mod needs its own trigger. The 18 standard types need none
 -- of that: they Terastallize today through battle_forms's existing menu,
 -- and everything in this file (STAB fix included) already applies to them.
+--
+-- DETECTION, redesigned (2026-08-20) around a real activation signal
+-- instead of inferring one. The previous version detected Terastallization
+-- by diffing curTypes/formTypes against the species' own types -- worked
+-- for the 18 standard types (their whole mechanism IS that field), but
+-- could never see Stellar at all (deliberately touches neither field) and
+-- carried a real, if narrow, false-negative gap even for standard types
+-- (a monotype mon Terastallizing into its own type is indistinguishable
+-- from never having Terastallized, since the live list reads identical
+-- either way).
+--
+-- Requested from the battle_forms dev instead: one Runtime.emit at the
+-- exact point src/tera.lua's activate() commits, for BOTH the Stellar and
+-- standard branches --
+--   Runtime.emit("battle_forms.tera_activated", { battle = battle, mon = mon })
+-- -- carrying the real mon object (confirmed this session: for Gen 2,
+-- src/battlerof.lua's own M.mon() is a pure pass-through, so this is the
+-- actual, persistent party-slot table, not a name or a copy -- object
+-- identity is what makes this reliable even between two Pokemon sharing a
+-- species and a name, which a name-text match never could be), and
+-- DELIBERATELY not the resolved type -- we keep our own per-mon Tera Type
+-- (tera_state.lua) as the one source of truth for WHAT type, and only ever
+-- take WHETHER-AND-WHO from battle_forms's own signal.
+--
+-- STATUS: requested, not yet landed. This file is written against that
+-- contract now (mod.events:on("battle_forms.tera_activated", ...) below)
+-- rather than kept on the old diff-based guess -- explicit user call,
+-- "we will have it be that way until the dev states otherwise." Until the
+-- dev adds the emit, this event never fires and Terastallization detection
+-- in this file is INERT (no STAB fix, no Stellar handling) -- a real,
+-- accepted, temporary regression versus the previous best-effort version,
+-- not a silent one.
 return function(mod)
-  local curTypesOf = mod.exports.curTypesOf
   local isGen2Battle = mod.exports.isGen2Battle
   local changeStage = mod.exports.changeStage
   local registerDamageModifier = mod.exports.registerDamageModifier
-  assert(curTypesOf and isGen2Battle and changeStage and registerDamageModifier,
+  local getTeraType = mod.exports.getTeraType
+  assert(isGen2Battle and changeStage and registerDamageModifier,
     "modern_tera: combat/modern_combat.lua must load first")
+  assert(getTeraType, "modern_tera: gigantamax/tera_state.lua must load first")
 
   -- The mon's TRUE, un-overridden species types -- battle.data.pokemon[id]
   -- read directly rather than through Battle:speciesDef(mon), because Gen
   -- 2 forms support (battle_forms's own src/gen2forms.lua) wraps THAT
   -- method to read mon.formTypes when present, which is exactly the field
-  -- Terastallization itself writes -- going through the wrapped method
-  -- would hand back the OVERRIDDEN type, not the original one this file
-  -- needs to retain STAB for and, for Stellar, to defend with. Direct
-  -- table access bypasses any method-level wrap entirely, whoever
-  -- installed it.
+  -- standard-type Terastallization itself writes -- going through the
+  -- wrapped method would hand back the OVERRIDDEN type, not the original
+  -- one this file needs to retain STAB for and, for Stellar, to defend
+  -- with. Direct table access bypasses any method-level wrap entirely,
+  -- whoever installed it.
   local function originalTypesOf(battle, who)
     local id = who and who.species
     local rec = id and battle and battle.data and battle.data.pokemon and battle.data.pokemon[id]
     return (rec and rec.types) or {}
   end
+  mod.exports.originalTypesOf = originalTypesOf
 
-  -- Best-effort live detection: no event exists anywhere (battle_forms
-  -- emits none, confirmed by reading its own main.lua/src/tera.lua in
-  -- full) for "a Terastallization just happened," so this reads the same
-  -- signature the mechanic itself leaves behind -- curTypes/formTypes
-  -- collapsed to exactly one type that differs from the species' own.
-  -- Nothing else in this mod (or battle_forms) replaces a battler's whole
-  -- type list wholesale, so this is a safe signal in practice, with one
-  -- known, accepted gap: a Pokemon Terastallizing into the exact type it
-  -- already has AND already has only that one type is indistinguishable
-  -- from never having Terastallized at all -- the live list reads
-  -- identical either way. That gap only ever costs the STAB bump (1.5x
-  -- stays 1.5x instead of rising to 2.0x) for that one narrow combination
-  -- and affects nothing else (Stellar can never collide with it, since
-  -- Stellar is never a species' own natural type). Documented, not solved
-  -- -- solving it needs a real activation-time signal battle_forms does
-  -- not provide.
+  -- Set only by the battle_forms.tera_activated listener below -- never
+  -- inferred, never guessed. `who` is always the real mon object (Gen 2
+  -- has no battler wrapper, confirmed via curTypesOf's own convention
+  -- elsewhere in this mod), the same one the event itself carries, so
+  -- this is a plain, direct field read.
   local function activeTeraType(battle, who, gen2)
-    if not (battle and who) then return nil end
-    local live = curTypesOf(who, gen2)
-    if #live ~= 1 then return nil end
-    local original = originalTypesOf(battle, who)
-    if #original == 1 and original[1] == live[1] then return nil end
-    return live[1]
+    if not (who and who.teraActive) then return nil end
+    local ok, value = pcall(getTeraType, who, battle)
+    return ok and value or nil
   end
   mod.exports.activeTeraType = activeTeraType
   mod.exports.isTerastallized = function(battle, who, gen2)
     return activeTeraType(battle, who, gen2) ~= nil
   end
-  mod.exports.originalTypesOf = originalTypesOf
+
+  -- The one real trigger. See file header -- requested from the
+  -- battle_forms dev, not yet landed; this is what makes it live the
+  -- moment it does, with no further changes needed here.
+  mod.events:on("battle_forms.tera_activated", function(ev)
+    local mon = ev and ev.mon
+    if not mon then return end
+    mon.teraActive = true
+    -- A fresh Terastallization always gets its full Stellar economy back
+    -- -- battle_forms's own once-per-battle transformation limit means
+    -- this only ever fires once per battle in practice, but clearing here
+    -- rather than assuming that stays true costs nothing and can't be
+    -- wrong either way.
+    mon.teraStellarUsedTypes = nil
+  end)
+
+  -- Ends on fainting and with the battle -- confirmed real Tera duration
+  -- rule, matching battle_forms's own src/tera.lua header ("survives
+  -- switching, where Dynamax ends on one, and it ends on fainting and
+  -- with the battle") -- so this deliberately does NOT clear on
+  -- battle.battler_switched. `battler` is the mon itself on Gen 2
+  -- (confirmed, gen2/Battle.lua:2989's own comment on this exact event).
+  mod.events:on("battle.fainted", function(ev)
+    local mon = ev and ev.battler
+    if not mon then return end
+    mon.teraActive = nil
+    mon.teraStellarUsedTypes = nil
+  end)
+  mod.events:on("battle.ended", function(ev)
+    local battle = ev and ev.battle
+    if not battle then return end
+    for _, mon in ipairs({ battle.player, battle.enemy }) do
+      if mon then
+        mon.teraActive = nil
+        mon.teraStellarUsedTypes = nil
+      end
+    end
+  end)
 
   ------------------------------------------------------------------
   -- STAB. See file header for the exact rule and why "stab" itself has
@@ -178,27 +235,6 @@ return function(mod)
       if t == ctx.move.type then return 2.0 end
     end
     return STELLAR_OTHER_BOOST
-  end)
-
-  -- Cleared on switch-in/battle-start the same defensive way Protect's own
-  -- per-turn flags are (modern_combat_protect.lua's Part C) -- a fresh
-  -- Terastallization (this battle or a later one) always gets its full
-  -- economy back, never left stale from a previous fight or a previous
-  -- Tera the mon is no longer holding.
-  mod.events:on("battle.battler_switched", function(ev)
-    local mon = ev and ev.battler
-    if mon and not activeTeraType(ev.battle, mon, ev.battle and isGen2Battle(ev.battle)) then
-      mon.teraStellarUsedTypes = nil
-    end
-  end)
-  mod.events:on("battle.turn_started", function(ev)
-    local battle = ev and ev.battle
-    if not battle then return end
-    for _, mon in ipairs({ battle.player, battle.enemy }) do
-      if mon and not activeTeraType(battle, mon, isGen2Battle(battle)) then
-        mon.teraStellarUsedTypes = nil
-      end
-    end
   end)
 
   ------------------------------------------------------------------

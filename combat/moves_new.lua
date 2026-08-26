@@ -1,3 +1,18 @@
+-- OUTDATED APPROACH, kept working (toggle-off/native-Gen2-mode fallback
+-- only), NOT the model for new work -- 2026-08-23. The `GALAR_*_EFFECT`
+-- custom ids below (one distinct registration per exact chance value,
+-- installed by main.lua's installMovepoolEffects) are superseded by
+-- reading national_dex's own dex.exports.moveById(id) directly for its
+-- modern fields (ailment/ailmentChance/flinchChance/statChance/
+-- statChanges/drain/healing/critRate/minHits/maxHits/minTurns/maxTurns --
+-- explicitly NOT gen1Effect/gen2Effect/their Modeled flags), consumed
+-- through combat/showdown_primitives.lua's verb set while the Gen 9
+-- combat-mode toggle is on. See MOVEPOOL_EFFECT_COVERAGE.md's own header
+-- for the full history of this reversal. This file's own custom effect
+-- ids are NOT being deleted -- they're still what runs when the Gen 9
+-- toggle is off, since native Gen2 combat still dispatches through them --
+-- just no longer the pattern to extend for new work.
+--
 -- Phase 2 -- the 174 moves needed by the 51 Phase-1 species' learnsets that
 -- do NOT already exist as a Gen 1-native move (see NATIVE_MOVE_ID in
 -- main.lua for the other 68, which need no entry here at all -- their full

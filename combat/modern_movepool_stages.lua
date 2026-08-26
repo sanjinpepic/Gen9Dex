@@ -69,7 +69,8 @@ return function(mod)
   local changeStage = mod.exports.changeStage
   local normalize = mod.exports.normalize
   local resetStages = mod.exports.resetStages
-  assert(changeStage and normalize and resetStages,
+  local bossStatsDropBlocked = mod.exports.bossStatsDropBlocked
+  assert(changeStage and normalize and resetStages and bossStatsDropBlocked,
     "modern_movepool_stages: combat/modern_combat.lua must load first")
 
   -- See file header. `n` is already-normalized ({battle,user,target,gen2}
@@ -77,7 +78,18 @@ return function(mod)
   -- or n.target) is having the stat changed, `fromEnemy` only matters on
   -- Gen 1 (Gen 2's changeStageAgainstMist derives the same Mist gate
   -- itself from who ~= n.user).
+  --
+  -- Boss-fight "statsDrop" protection checked FIRST, ahead of either
+  -- native branch: this is the exact gap this file's own header already
+  -- flags for Substitute (native changeStageAgainstMist/NativeMoveEffects
+  -- .changeStage have no protection hooks of their own at all) -- the
+  -- same reasoning applies here, so the check has to live at this call
+  -- site rather than inside either native function. See modern_combat
+  -- .lua's own bossStatsDropBlocked header for the full rule.
   local function changeNativeStage(n, who, stat, delta, fromEnemy)
+    if bossStatsDropBlocked(n.battle, who, delta) then
+      return { romText(n.battle.data, "_NothingHappenedText", "Nothing happened!") }
+    end
     if n.gen2 then
       n.battle:changeStageAgainstMist(n.user, who, stat, delta)
       return {}
@@ -262,6 +274,20 @@ return function(mod)
       local n = normalize(a, b, c)
       if n.gen2 then return {} end
       local target = n.target
+      -- Boss-fight "statsDrop" protection: Clear Smog ZEROES every stage
+      -- rather than applying a signed delta, so it never reaches either
+      -- of bossStatsDropBlocked's own call sites (changeStage/
+      -- changeNativeStage) -- confirmed real gap, this mod's own
+      -- research this session. Stripping the boss's own positive boosts
+      -- down to 0 is a worsening exactly like any other drop (the
+      -- dominant real use of this move against a boss), so the whole
+      -- effect is blocked outright against a protected target rather
+      -- than trying to selectively keep only the "cures an existing
+      -- debuff" half.
+      if target == n.battle.enemy and mod.exports.bossFightHas
+          and mod.exports.bossFightHas(n.battle, "statsDrop") then
+        return { romText(n.battle.data, "_NothingHappenedText", "Nothing happened!") }
+      end
       local changed = resetStages(n.battle, target, false)
       if target.stages then
         for _, stat in ipairs({ "speed", "accuracy", "evasion" }) do

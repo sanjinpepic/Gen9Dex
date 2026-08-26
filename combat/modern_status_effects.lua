@@ -238,6 +238,36 @@ return function(mod)
   -- reasoning as ATTRACT above.
 
   ------------------------------------------------------------------
+  -- Baton Pass carryover: real current Pokemon Showdown behavior
+  -- (smogon/pokemon-showdown's own data/conditions.ts and data/moves.ts,
+  -- fetched directly rather than recalled from memory) drops a volatile
+  -- from the copy specifically when that volatile's own condition record
+  -- carries `noCopy: true` -- confirmed set on disable, encore, and
+  -- attract (all three already on Gen 2 native's own Effects.
+  -- BATON_PASS_DROPS list) plus torment, which this mod adds (above) and
+  -- native's own list predates. Mutated here rather than reimplementing
+  -- EFFECT_BATON_PASS: Effects.BATON_PASS_DROPS is a live table native's
+  -- own handler reads fresh every time Baton Pass is used (`for _, key in
+  -- ipairs(Effects.BATON_PASS_DROPS) do carried[key] = nil end`,
+  -- gen2/Battle.lua), so appending to it from mod code takes effect
+  -- immediately with no need to touch or duplicate that handler at all.
+  -- Taunt, confusion, Leech Seed, Perish Song, and Focus Energy carry no
+  -- such flag in the real source and are correctly copied already, which
+  -- is why none of those are added here.
+  do
+    local ok, Effects = pcall(require, "src.battle.gen2.Effects")
+    if ok and Effects and Effects.BATON_PASS_DROPS then
+      local alreadyListed = false
+      for _, key in ipairs(Effects.BATON_PASS_DROPS) do
+        if key == "tormented" then alreadyListed = true break end
+      end
+      if not alreadyListed then
+        Effects.BATON_PASS_DROPS[#Effects.BATON_PASS_DROPS + 1] = "tormented"
+      end
+    end
+  end
+
+  ------------------------------------------------------------------
   -- Gen 1 enforcement
   ------------------------------------------------------------------
 

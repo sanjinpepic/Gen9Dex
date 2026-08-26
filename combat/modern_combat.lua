@@ -87,13 +87,23 @@ return function(mod)
   -- whenever the attacker is Terastallized, so the two never double-count
   -- the same hit.
   --
-  -- Documented, NOT implemented, extension point for later work:
+  -- Documented, NOT implemented, extension points for later work:
   --   "adaptability_stab": an ability multiplier replacing stab's 1.5x
   --     with 2.0x for a matching type -- register at the same priority
   --     as "stab" and have "stab" itself check for the ability and
   --     return 1.0 (deferring) when adaptability's entry already fired.
   --   general ability/item damage multipliers: priority < 100 (after
   --     STAB), e.g. Life Orb, Choice Band, a damage-boosting ability.
+  --   TODO -- spread-move damage reduction (real Gen 9 rule: a move that
+  --     hits more than one target this turn deals 0.75x damage to each,
+  --     versus hitting a single target at full damage) -- a real
+  --     registerDamageModifier entry once combat/MULTI_BATTLE_HOOKS.md's
+  --     multi-target resolver exists (ctx needs a target COUNT for this
+  --     hit, which nothing in a 2-battler engine can ever produce above
+  --     1 -- see that doc's own "what's still missing" section, same
+  --     root cause as the turn-order gap: no multi-battler data model
+  --     here yet). Not buildable or testable until then -- flagged now
+  --     so it isn't rediscovered as a surprise later.
   ------------------------------------------------------------------
   local damageModifiers = {} -- { {id=, priority=, fn=}, ... }, sorted desc
 
@@ -195,8 +205,17 @@ return function(mod)
   -- self.weather's VALUE, not a fixed key list -- handles it correctly
   -- with no control-flow changes at all.
   ------------------------------------------------------------------
-  local GEN2_WEATHER_VALUE = { RAIN = "rain", SUN = "sun", SAND = "sandstorm", SNOW = "snow" }
-  local FROM_GEN2_WEATHER_VALUE = { rain = "RAIN", sun = "SUN", sandstorm = "SAND", snow = "SNOW" }
+  -- STRONGWINDS (Delta Stream's own "mysterious air current" -- Phase
+  -- 1.5): not a real native Gen 2 weather value, added here purely so
+  -- setWeather/currentWeather stay the ONE cross-engine reader/writer for
+  -- every field-weather state this project has, primal included, with no
+  -- special-casing anywhere else. Native Gen2 tickWeather's own end-of-
+  -- turn countdown is keyed off self.weather's VALUE generically (already
+  -- confirmed for SNOW, see combat/modern_weather.lua's own header) --
+  -- an unrecognized value ticks down harmlessly with no special message,
+  -- same as any other weather already does.
+  local GEN2_WEATHER_VALUE = { RAIN = "rain", SUN = "sun", SAND = "sandstorm", SNOW = "snow", STRONGWINDS = "strongwinds" }
+  local FROM_GEN2_WEATHER_VALUE = { rain = "RAIN", sun = "SUN", sandstorm = "SAND", snow = "SNOW", strongwinds = "STRONGWINDS" }
 
   -- Single cross-engine reader: "RAIN"|"SUN"|"SAND"|"SNOW"|nil, regardless
   -- of which engine's own field shape backs it. Every weather touch-point
@@ -218,17 +237,100 @@ return function(mod)
   local WEATHER_TURNS = 5
   mod.exports.WEATHER_TURNS = WEATHER_TURNS
 
-  -- key is "RAIN"|"SUN"|"SAND"|"SNOW"|nil (nil clears the weather).
-  local function setWeather(battle, gen2, key)
+  -- key is "RAIN"|"SUN"|"SAND"|"SNOW"|nil (nil clears the weather). turns
+  -- defaults to WEATHER_TURNS (5) when omitted -- this function stays
+  -- state-only, no item knowledge of its own; a caller wanting the real
+  -- Damp/Heat/Smooth/Icy Rock extension (modern_weather.lua's own
+  -- weatherStarter) resolves its own duration via
+  -- mod.exports.resolveFieldDuration (combat/field_duration.lua) first and
+  -- passes the result in explicitly.
+  --
+  -- setterMon (optional, 5th arg): who's actually setting this weather.
+  -- Every caller in this mod already knows this (the move's user, or the
+  -- ability's holder) -- passed through here purely for the boss-fight
+  -- "sun" protection below, which needs to know WHICH side is setting
+  -- weather, not just what value. A caller with no boss-fight concern at
+  -- all can keep omitting it exactly like before this parameter existed.
+  local function setWeather(battle, gen2, key, turns, setterMon)
+    turns = key and (turns or WEATHER_TURNS) or 0
+    -- Boss-fight "sun" protection (combat/boss_fight.lua): whenever the
+    -- boss itself (battle.enemy) is the one setting weather while this
+    -- protection is active, the set becomes permanent and locked at the
+    -- SAME tier primal weather already uses (battle.weatherPrimal) --
+    -- reusing that existing lock rather than inventing a second one,
+    -- since the semantics are identical (irreplaceable, indefinite). The
+    -- one thing layered on top is battle.weatherBossLocked, which
+    -- canSetWeather below treats as a tier ABOVE primal (explicit user
+    -- rule: "even if player has primal weather, primal weather can't win
+    -- over boss' set weather") and which abilities/engine/
+    -- switchin_primal_weather.lua's own "ends when the setter leaves"
+    -- listener checks to stay permanent for the whole fight rather than
+    -- clearing on a mid-fight boss-side switch.
+    if key and battle and setterMon and setterMon == battle.enemy
+        and mod.exports.bossFightHas and mod.exports.bossFightHas(battle, "sun") then
+      turns = math.huge
+      battle.weatherPrimal = true
+      battle.weatherPrimalSetter = setterMon
+      battle.weatherBossLocked = true
+    end
     if gen2 then
       battle.weather = key and GEN2_WEATHER_VALUE[key] or nil
-      battle.weatherTurns = key and WEATHER_TURNS or 0
+      battle.weatherTurns = turns
+      mod.events:emit("g9.weather_changed", { battle = battle, key = key })
       return
     end
     battle.weather = key
-    battle.weatherTurns = key and WEATHER_TURNS or 0
+    battle.weatherTurns = turns
+    -- Shared notification, any future feature can subscribe to this, not
+    -- specific to one consumer: fired on every explicit weather change
+    -- this mod's own code makes (every caller funnels through this one
+    -- function) -- covers Gen 1's natural expiry too, since that already
+    -- calls back into this same function (combat/modern_weather.lua's own
+    -- battle.turn_ended handler: setWeather(battle, false, nil)), not a
+    -- direct field write. Does NOT cover Gen 2's native tickWeather
+    -- expiry (gen2/Battle.lua) -- that path is pure native code this
+    -- mod's own setWeather is never called from, the same "Gen 2 handles
+    -- its own thing" gap this mod has documented elsewhere since Phase 4.
+    -- Added this session for abilities/engine/forecast_weather.lua's own
+    -- reactive re-derivation (Forecast needs to know the INSTANT weather
+    -- actually changes, not just at switch-in) -- that file's own header
+    -- explains how it covers the one Gen-2-native gap this emission can't
+    -- reach (a battle.turn_ended safety-net recheck, accepting at most
+    -- one turn of lag for that specific case only).
+    mod.events:emit("g9.weather_changed", { battle = battle, key = key })
   end
   mod.exports.setWeather = setWeather
+
+  -- Gate for every plain (move or ability) weather setter, Phase 1.5's own
+  -- addition: Desolate Land/Primordial Sea/Delta Stream set an
+  -- irreplaceable field state (battle.weatherPrimal) that this function
+  -- alone decides whether a given caller may touch. isPrimalSource=false
+  -- (every move starter, every Phase-1 plain weather ability) is refused
+  -- outright while a primal weather is up -- real current Showdown: not
+  -- even another primal-weather-caliber ability, only its own kind, can
+  -- override a plain Rain Dance, and nothing at all can override a primal
+  -- except one of the other two primals. isPrimalSource=true always
+  -- succeeds, matching the real rule that Groudon replacing Kyogre's Primal
+  -- Sea with its own Desolate Land (or vice versa) is legal. Kept here
+  -- (not inside setWeather itself) so setWeather stays a plain, opinionless
+  -- state setter every caller already trusts -- the irreplaceability
+  -- RULE belongs at each call site, not inside the primitive.
+  --
+  -- setterMon (optional 3rd arg): required to evaluate the boss-fight
+  -- "sun" protection, checked FIRST, ahead of the primal tier -- explicit
+  -- user rule: a boss's own set weather beats even a player's primal
+  -- weather. Only the boss's own side (battle.enemy) is ever authorized
+  -- while this protection is active; every other caller, primal included,
+  -- is refused outright. A caller that omits setterMon while this
+  -- protection happens to be active is refused by default (nil ~= battle
+  -- .enemy) rather than silently bypassing the lock.
+  mod.exports.canSetWeather = function(battle, isPrimalSource, setterMon)
+    if battle and mod.exports.bossFightHas and mod.exports.bossFightHas(battle, "sun") then
+      return setterMon ~= nil and setterMon == battle.enemy
+    end
+    if not (battle and battle.weatherPrimal) then return true end
+    return isPrimalSource == true
+  end
 
   -- Sun/Rain's Fire/Water damage multiplier. Priority 110, ABOVE stab's
   -- 100 -- real Gen 6+ Showdown applies the weather modifier before STAB
@@ -557,7 +659,28 @@ return function(mod)
     return { battle = a, user = b, target = c, gen2 = true }
   end
 
+  -- Boss-fight "statsDrop" protection (combat/boss_fight.lua): true when
+  -- `who` can't have this delta applied at all -- the boss can't have ANY
+  -- stat lowered while protected, hostile OR self-inflicted (explicit
+  -- user rule: "not even self," unlike the Substitute/Mist check below,
+  -- which only ever blocks a hostile change). Exported, not inlined only
+  -- here: combat/modern_movepool_stages.lua's changeNativeStage and
+  -- abilities/engine/switchin_stat_change.lua's native-store branch both
+  -- route speed/accuracy/evasion through Gen 2's own native
+  -- Battle:changeStageAgainstMist DIRECTLY, bypassing this function (and
+  -- its own Substitute check) entirely -- both of those call sites check
+  -- this same rule before ever reaching the native call, so a boss's
+  -- speed/accuracy/evasion is protected exactly as completely as its
+  -- attack/defense/spa/spd.
+  mod.exports.bossStatsDropBlocked = function(battle, who, delta)
+    return delta < 0 and battle ~= nil and who == battle.enemy
+      and mod.exports.bossFightHas ~= nil and mod.exports.bossFightHas(battle, "statsDrop")
+  end
+
   local function changeStage(battle, who, stat, delta, fromEnemy, gen2)
+    if mod.exports.bossStatsDropBlocked(battle, who, delta) then
+      return { romText(battle.data, "_NothingHappenedText", "Nothing happened!") }
+    end
     local protectedBySub, mist = isProtectedFrom(battle, who, gen2)
     if fromEnemy and (protectedBySub or mist) then
       if mist then
@@ -921,8 +1044,27 @@ return function(mod)
       if mult == 0 then
         return 0, { crit = false, typeMult = 0 }
       end
-      for _, m in ipairs(TypeChart.rows(move.type, targetTypes)) do
-        d = math.floor(d * m / 10)
+      -- Delta Stream's own field state (abilities/engine/
+      -- switchin_primal_weather.lua): caps a would-be-super-effective hit
+      -- against a Flying-type defender down to neutral. Computed here,
+      -- once the real aggregate `mult` is already known, rather than as
+      -- another registerDamageModifier entry above -- every one of those
+      -- runs BEFORE `mult` exists at all, so none of them can express
+      -- "replace the type multiplier," only "multiply an extra factor
+      -- into `d`." A nil return (every non-Delta-Stream battle; a hit
+      -- that isn't super effective in the first place) means "no
+      -- override," and the real per-type rows below still run unchanged.
+      local overrideMult = mod.exports.effectivenessOverrideFor
+        and mod.exports.effectivenessOverrideFor(ctx.battle, target, gen2, move.type, mult)
+      if overrideMult and overrideMult ~= mult then
+        mult = overrideMult
+        if mult ~= 1.0 then
+          d = math.floor(d * mult)
+        end
+      else
+        for _, m in ipairs(TypeChart.rows(move.type, targetTypes)) do
+          d = math.floor(d * m / 10)
+        end
       end
       -- Stellar's own "always weak to Stellar moves" rule: an additional
       -- x2, not a chart row (Stellar deliberately carries none) -- fires

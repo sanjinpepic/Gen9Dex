@@ -133,6 +133,11 @@ end
 -- Duration values (confusedTurns, 2-5 turns) are reasonable
 -- approximations, not confirmed exact -- this engine's own real formula
 -- was not found in any reference source; unchanged by this fix.
+-- OUTDATED APPROACH, kept working (toggle-off/native-Gen2-mode fallback
+-- only) -- 2026-08-23, same reversal as moves_new.lua's own header. New
+-- move-effect work reads national_dex's dex.exports.moveById(id) for its
+-- modern fields directly, through combat/showdown_primitives.lua, rather
+-- than growing this function's GALAR_FLINCH/CONFUSE/TRAP registrations.
 local function installMovepoolEffects(mod, movesData)
   local flinchChanceByMove, confuseChanceByMove = {}, {}
   for id, def in pairs(movesData) do
@@ -947,8 +952,89 @@ return function(mod)
   -- than a raw monkey-patch -- no async wait state, no protocol, no
   -- separate process. Applies to every battle (wild, trainer, link), not
   -- just wild ones.
+  -- Gen 9 Showdown-accurate primitives (damage/heal/faint/status/
+  -- volatile/boost/chance) -- the verb set the new national_dex-
+  -- moveById-driven combat mode is built from. No dependency on
+  -- anything else in this file; loaded first among the combat/ installs
+  -- purely so anything after it can consume mod.exports.ShowdownPrimitives.
+  -- See combat/showdown_primitives.lua's own header for the full
+  -- grounding and the standing "native stays the storage substrate,
+  -- this owns the rules" split.
+  local installShowdownPrimitives = loadSibling(mod, "combat/showdown_primitives.lua")
+  installShowdownPrimitives(mod)
+
+  -- The generic "this mon's own side switches out mid-move, battle keeps
+  -- going" primitive (mod.exports.requestSwitch/registerSwitchAiChooser) --
+  -- U-turn/Volt Switch are its first real callers (below), but per explicit
+  -- user decision this is meant to be the same entrypoint any future
+  -- ability/item effect reaches for too. No dependency on anything else in
+  -- this file; loaded here, right after ShowdownPrimitives, so every real
+  -- move-effect install below can consume mod.exports.requestSwitch. The
+  -- vanilla-scene bridge (switch-request event -> real party pick ->
+  -- Battle:switch) has no dependency the other way -- installed alongside
+  -- for grouping. See combat/switch_primitives.lua's own header for the
+  -- full grounding, including why this mod stays entirely self-contained
+  -- (no gen1recomp-dev engine source edits anywhere in it).
+  local installSwitchPrimitives = loadSibling(mod, "combat/switch_primitives.lua")
+  installSwitchPrimitives(mod)
+  local installSwitchVanillaBridge = loadSibling(mod, "combat/switch_vanilla_bridge.lua")
+  installSwitchVanillaBridge(mod)
+
+  -- Shared "does the setter hold the duration-extending item" primitive --
+  -- weather (below), Trick Room, and the new terrain system (further down)
+  -- all resolve their own real duration through this one function rather
+  -- than three copies of the same 5-vs-8 check. No dependency on anything
+  -- else in this file; loaded here so every real field-effect install
+  -- below can consume mod.exports.resolveFieldDuration. See combat/
+  -- field_duration.lua's own header for the full grounding.
+  local installFieldDuration = loadSibling(mod, "combat/field_duration.lua")
+  installFieldDuration(mod)
+
+  -- The ability-execution primitive (mod.exports.abilityIdOf/
+  -- abilityBehaviorOf) -- this mod's first real integration of
+  -- national_dex's ability data into actual battle behavior. Only needs
+  -- national_dex (a hard dependency, already loaded), so it can sit here,
+  -- ahead of modern_combat.lua, ready for anything below to consume. See
+  -- abilities/ability_dispatch.lua's own header for the full grounding,
+  -- including the explicit user directive that every ability engine file
+  -- keeps its data (abilities/data/*.lua, pure tables) and its dispatch
+  -- logic (abilities/engine/*.lua) in entirely separate files.
+  local installAbilityDispatch = loadSibling(mod, "abilities/ability_dispatch.lua")
+  installAbilityDispatch(mod)
+
   local installModernCombat = loadSibling(mod, "combat/modern_combat.lua")
   installModernCombat(mod)
+
+  -- Boss-fight protection flags (mod.exports.setBossFightProtections/
+  -- bossFightHas) -- loaded right after modern_combat.lua since several
+  -- of its own primitives (setWeather/canSetWeather, changeStage/
+  -- bossStatsDropBlocked) read bossFightHas, but every read is lazy
+  -- (inside a function body, not hoisted at install time), so this is
+  -- about readability, not a real ordering requirement. See combat/
+  -- boss_fight.lua's own header for the full flag list and where each
+  -- one's actual enforcement lives.
+  local installBossFight = loadSibling(mod, "combat/boss_fight.lua")
+  installBossFight(mod)
+
+  -- hardStatus/softStatus/antiDrain halves of the boss-fight protection
+  -- set -- grouped in their own file since none of the three has an
+  -- existing primitive-owning file the way weather/terrain/type do. See
+  -- combat/boss_fight_status.lua's own header for the full grounding,
+  -- including why its confusion listener needs an explicit priority
+  -- rather than trusting load order.
+  local installBossFightStatus = loadSibling(mod, "combat/boss_fight_status.lua")
+  installBossFightStatus(mod)
+
+  -- The first real wired abilities: Intimidate/Intrepid Sword/Dauntless
+  -- Shield/Supersweet Syrup, all switch_in + kind="stat_change" in
+  -- national_dex's own data. Consumes modern_combat.lua's changeStage
+  -- (installed just above) and ability_dispatch.lua's abilityIdOf
+  -- (installed above that). See abilities/engine/switchin_stat_change.lua's
+  -- own header for the full grounding and why every other switch_in
+  -- ability was left out of this first pass.
+  local statChangeSwitchinData = loadSibling(mod, "abilities/data/stat_change_switchin.lua")
+  local installSwitchinStatChange = loadSibling(mod, "abilities/engine/switchin_stat_change.lua")
+  installSwitchinStatChange(mod, statChangeSwitchinData)
   local installModernCombatProtect = loadSibling(mod, "combat/modern_combat_protect.lua")
   installModernCombatProtect(mod)
   -- Terastallization's own combat mechanics (STAB fix, Stellar defense/
@@ -956,6 +1042,68 @@ return function(mod)
   -- exports, must load after it. See combat/modern_tera.lua's own header.
   local installModernTera = loadSibling(mod, "combat/modern_tera.lua")
   installModernTera(mod)
+
+  -- Type override: the generic "this mon's own current type changes mid-
+  -- battle" primitive (mod.exports.setMonTypes, the TYPE_CHANGE_SOURCES
+  -- dictionary) -- Soak/Magic Powder/Burn Up/etc. are its first real
+  -- callers (below), but per explicit user decision this is meant to be
+  -- the same entrypoint a future ability (Protean/Libero/Color Change)
+  -- reaches for too. Consumes modern_tera.lua's own originalTypesOf,
+  -- installed just above. See combat/type_override_primitives.lua's own
+  -- header for the full grounding, including why this is a distinct
+  -- system from Terastallization.
+  local installTypeOverridePrimitives = loadSibling(mod, "combat/type_override_primitives.lua")
+  installTypeOverridePrimitives(mod)
+
+  -- Protean/Libero (on_move_used) and Color Change (on_damaged) --
+  -- consumes type_override_primitives.lua's setMonTypes/canChangeType/
+  -- once-per-switch-in tracking, all installed just above. See abilities/
+  -- engine/onmove_type_change.lua and abilities/engine/
+  -- ondamage_type_change.lua's own headers for the full grounding.
+  local typeChangeOnMoveData = loadSibling(mod, "abilities/data/type_change_onmove.lua")
+  local installOnMoveTypeChange = loadSibling(mod, "abilities/engine/onmove_type_change.lua")
+  installOnMoveTypeChange(mod, typeChangeOnMoveData)
+  local typeChangeOnDamageData = loadSibling(mod, "abilities/data/type_change_ondamage.lua")
+  local installOnDamageTypeChange = loadSibling(mod, "abilities/engine/ondamage_type_change.lua")
+  installOnDamageTypeChange(mod, typeChangeOnDamageData)
+
+  -- Phase 1.8: Multitype/Forecast/Mimicry -- the "passive, derived-type"
+  -- family, a structurally different shape from Protean/Libero/Color
+  -- Change above (those are discrete-trigger; these three compute their
+  -- type continuously, or in Multitype's case once at switch-in, from
+  -- live item/weather/terrain state rather than reacting to one move/
+  -- damage event). No dependency on modern_weather.lua/modern_terrain.lua
+  -- actually being loaded by this point -- each engine's own asserts only
+  -- need type_override_primitives.lua/modern_combat.lua/ability_dispatch
+  -- .lua (all already loaded above); their event listeners are lazy and
+  -- only ever run during a real battle, by which point every mod has
+  -- finished loading. See each file's own header for its full grounding.
+  local multitypeSwitchinData = loadSibling(mod, "abilities/data/multitype_switchin.lua")
+  local installSwitchinMultitype = loadSibling(mod, "abilities/engine/switchin_multitype.lua")
+  installSwitchinMultitype(mod, multitypeSwitchinData)
+  local forecastWeatherData = loadSibling(mod, "abilities/data/forecast_weather.lua")
+  local installForecastWeather = loadSibling(mod, "abilities/engine/forecast_weather.lua")
+  installForecastWeather(mod, forecastWeatherData)
+  local mimicryTerrainData = loadSibling(mod, "abilities/data/mimicry_terrain.lua")
+  local installMimicryTerrain = loadSibling(mod, "abilities/engine/mimicry_terrain.lua")
+  installMimicryTerrain(mod, mimicryTerrainData)
+
+  -- Turn order: Gen 9/Showdown-accurate priority + Speed + Trick-Room-
+  -- aware + random-tie comparator, replacing gen2/Battle.lua's own native
+  -- one via the battle.turn_order hook. No dependency on modern_combat.lua's
+  -- own exports, load position here is just for grouping with the rest of
+  -- combat/. See combat/turn_order.lua's own header and
+  -- combat/MULTI_BATTLE_HOOKS.md for the full grounding.
+  local installTurnOrder = loadSibling(mod, "combat/turn_order.lua")
+  installTurnOrder(mod)
+
+  -- Trick Room's own real activation -- fills the exact gap
+  -- combat/turn_order.lua's own header flags ("always false today"),
+  -- with no dependency the other way around: this just writes
+  -- battle.trickRoomActive, which that file already reads. See
+  -- combat/trick_room.lua's own header for the full grounding.
+  local installTrickRoom = loadSibling(mod, "combat/trick_room.lua")
+  installTrickRoom(mod)
 
   -- Phase 1 of the move-effect completion pipeline: wires moves_new.lua's
   -- stat-stage-change stubs to modern_combat.lua's changeStage primitive.
@@ -998,6 +1146,39 @@ return function(mod)
   local installModernStatusEffects = loadSibling(mod, "combat/modern_status_effects.lua")
   installModernStatusEffects(mod)
 
+  -- Self-switch moves (U-turn, Volt Switch) -- consumes
+  -- mod.exports.requestSwitch, installed above; see
+  -- combat/modern_switch_moves.lua's own header for why this wraps
+  -- Battle:useMove rather than acting straight from its own
+  -- battle.damage_dealt listener.
+  local installModernSwitchMoves = loadSibling(mod, "combat/modern_switch_moves.lua")
+  installModernSwitchMoves(mod)
+
+  -- Terrain: Electric/Grassy/Misty/Psychic -- consumes modern_combat.lua's
+  -- curTypesOf/registerDamageModifier and field_duration.lua's
+  -- resolveFieldDuration, both installed above. See combat/
+  -- modern_terrain.lua's own header for the full grounding.
+  local installModernTerrain = loadSibling(mod, "combat/modern_terrain.lua")
+  installModernTerrain(mod)
+
+  -- Electric/Grassy/Misty/Psychic Surge + Hadron Engine's terrain half --
+  -- consumes modern_terrain.lua's own mod.exports.setTerrain (extracted
+  -- from its move starters just above, specifically so this engine could
+  -- reuse it) and ability_dispatch.lua's abilityIdOf. See abilities/
+  -- engine/switchin_terrain.lua's own header for the full grounding.
+  local terrainSwitchinData = loadSibling(mod, "abilities/data/terrain_switchin.lua")
+  local installSwitchinTerrain = loadSibling(mod, "abilities/engine/switchin_terrain.lua")
+  installSwitchinTerrain(mod, terrainSwitchinData)
+
+  -- change_type moves (Soak, Magic Powder, Conversion, Reflect Type,
+  -- Camouflage, Burn Up, Double Shock) -- consumes mod.exports.
+  -- setMonTypes (type_override_primitives.lua, installed above) and
+  -- battle.terrain (modern_terrain.lua, installed just above). See
+  -- combat/modern_type_change_moves.lua's own header for the full
+  -- grounding.
+  local installModernTypeChangeMoves = loadSibling(mod, "combat/modern_type_change_moves.lua")
+  installModernTypeChangeMoves(mod)
+
   -- Phase 4 of the move-effect completion pipeline: weather (Rain Dance/
   -- Sunny Day/Sandstorm/Snowscape, Thunder/Blizzard's accuracy exception,
   -- Solar Beam's Sun charge-skip, Sand's end-of-turn chip). Weather STATE
@@ -1008,6 +1189,29 @@ return function(mod)
   -- Beam performMove wrap sits inside (native-ward of) Max Guard's own.
   local installModernWeather = loadSibling(mod, "combat/modern_weather.lua")
   installModernWeather(mod)
+
+  -- Drizzle/Drought/Snow Warning + Orichalcum Pulse's weather half --
+  -- consumes modern_weather.lua's own setWeather/currentWeather and
+  -- ability_dispatch.lua's abilityIdOf. See abilities/engine/
+  -- switchin_weather.lua's own header for the full grounding, including
+  -- why Desolate Land/Primordial Sea/Delta Stream are deliberately not
+  -- here yet (Phase 1.5, explicit user decision).
+  local weatherSwitchinData = loadSibling(mod, "abilities/data/weather_switchin.lua")
+  local installSwitchinWeather = loadSibling(mod, "abilities/engine/switchin_weather.lua")
+  installSwitchinWeather(mod, weatherSwitchinData)
+
+  -- Phase 1.5: Desolate Land/Primordial Sea/Delta Stream ("primal"
+  -- weather) -- irreplaceable, indefinite duration, ends when the setting
+  -- Pokemon leaves the field, plus Desolate Land/Primordial Sea's own
+  -- Water/Fire move-fail gate and Delta Stream's type-effectiveness cap.
+  -- A deliberately separate engine file from switchin_weather.lua just
+  -- above -- the mechanics genuinely differ (see that file's own header
+  -- for the full grounding), not a copy-paste split. Consumes modern_
+  -- weather.lua's own setWeather/currentWeather/canSetWeather (installed
+  -- just above) and ability_dispatch.lua's abilityIdOf/abilityBehaviorOf.
+  local primalWeatherSwitchinData = loadSibling(mod, "abilities/data/primal_weather_switchin.lua")
+  local installSwitchinPrimalWeather = loadSibling(mod, "abilities/engine/switchin_primal_weather.lua")
+  installSwitchinPrimalWeather(mod, primalWeatherSwitchinData)
 
   -- Part B Phase 5, first batch: entry hazards (Stealth Rock, Toxic
   -- Spikes, Rapid Spin). Same load-order requirement as modern_weather.lua
