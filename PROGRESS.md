@@ -153,4 +153,23 @@ can this species learn" source (`combat/learnset_ownership.lua`); this
 mod gates actual usability on its own move-effect completeness (now read
 entirely off the live registry, see the standing rule above), enforced
 in-battle by a 0-PP-style blocking gate (`combat/move_availability_gate.lua`)
-installed outermost, after every other `:update` wrap.
+installed after every other `:update` wrap bar one (the battle-prompt
+intercept below, which reads no input outside its own phase).
+
+## In-battle two-choice prompt (mod-facing primitive)
+✅ **Done, Gen 2.** `mod.exports.askBattleChoice` / `battleChoiceActive` /
+`cancelBattleChoice` (`combat/battle_prompt.lua`): any mod supplies a
+question, two labels and a callback, and gets the answer back. A
+primitive, not a policy — nothing in it knows what a boss, a capture or
+an HP threshold is, so the boss-at-1-HP "CATCH it"/"LEAVE it" case is a
+caller, not a hardcoded rule. Works around a real base-engine
+limitation, confirmed by source read: `src/ui/gen2/BattleState.lua:3822`
+draws the yes/no box only for five hardcoded phase names, and an
+unrecognised phase falls off the end of native `:update` every frame — a
+softlock, not merely an undrawn box. Installed as Phase 17, outermost of
+every `:update` wrap, so its own phase name never reaches another wrap.
+🔶 **Gen 1 is a follow-up**: `src/battle/BattleState.lua` has no yes/no
+infrastructure at all, so there is no box to reuse there and the whole
+widget would have to be drawn from scratch against a different chrome
+stack — `askBattleChoice` returns `false` with a reason on a Gen 1 boot
+rather than half-working.
