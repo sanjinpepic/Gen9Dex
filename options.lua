@@ -84,4 +84,20 @@ return {
     choices = { { "ON", "true" }, { "OFF", "false" } },
     description = "ON: Gigantamax's size-up and size-down happen instantly (0 seconds, no staged ramp/pause) instead of the eased multi-stage animation. OFF (default): the full animated sequence plays.",
   },
+  {
+    key = "gym_badge_buff",
+    label = "GYM BADGE BUFF",
+    type = "choice",
+    default = "true",
+    choices = { { "ON", "true" }, { "OFF", "false" } },
+    description = "ON (default): owning certain badges boosts the player's WHOLE side's stats/move-type damage (real Gold/Silver mechanic, now correctly applied to every player-side battler in a doubles/triples fight, not just the lead -- native Gen 2 only ever checked the single primary battler). OFF: no badge stat/type boost for anyone.",
+  },
+  {
+    key = "dev_tools",
+    label = "DEV TOOLS",
+    type = "choice",
+    default = "false",
+    choices = { { "ON", "true" }, { "OFF", "false" } },
+    description = "ON: adds a DEVSTATS entry to the party submenu (selected Pokemon) showing its ability/nature/Tera type/Dynamax level/Gigantamax Factor, real combat stats, and full EV/IV distribution across 3 pages. OFF (default): party submenu is unchanged.",
+  },
 }

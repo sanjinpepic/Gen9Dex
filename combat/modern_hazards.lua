@@ -1,5 +1,5 @@
 -- Part B Phase 5: entry hazards -- Spikes, Stealth Rock, Toxic Spikes,
--- Sharp Steel, Rapid Spin. First of the ~49 confirmed-remaining
+-- Sharp Steel, Sticky Web, Rapid Spin. First of the ~49 confirmed-remaining
 -- moves_new.lua stubs (see this session's own re-audit: PROTECT/DETECT
 -- and the pure multiHit moves were false positives already handled
 -- elsewhere, bringing the real count from the original ~68 estimate
@@ -102,11 +102,16 @@ return function(mod)
     battle.hazards = battle.hazards or {}
     local h = battle.hazards[side]
     if not h then
-      h = { stealthRock = false, toxicSpikes = 0, sharpSteel = false }
+      h = { stealthRock = false, toxicSpikes = 0, sharpSteel = false, stickyWeb = false }
       battle.hazards[side] = h
     end
     return h
   end
+  -- Exported (Phase 8, other bucket, Toxic Debris) -- the one real
+  -- shared accessor for this file's own hazards table, so an ability
+  -- that sets Toxic Spikes reuses the exact same 2-layer cap rather than
+  -- re-deriving it.
+  mod.exports.hazardsFor = hazardsFor
 
   -- Mon-shaped accessor for whichever generation's battler this is --
   -- Gen 1 hands a wrapper (battler.mon), Gen 2 hands the raw mon
@@ -115,6 +120,31 @@ return function(mod)
   -- here: Gen 2's engine has no battler wrapper").
   local function monOf(battler, gen2)
     return gen2 and battler or battler.mon
+  end
+
+  -- Real grounding exemption for the three hazards that actually care
+  -- about it (native Spikes, Toxic Spikes, Sticky Web -- Stealth Rock and
+  -- Sharp Steel hit everyone regardless, real mechanic, no exemption at
+  -- all): Flying-type, or an ability that grants the same airborne status
+  -- Levitate does. Closes this file's own pre-existing INTERACTION TODO
+  -- (written before this mod had any battle-effective ability system at
+  -- all) -- LEVITATE itself isn't built as its own Ground-move-type-
+  -- immunity ability anywhere in this mod yet (a real, separate,
+  -- un-numbered gap), but checking its id here for hazard-grounding
+  -- purposes is still correct and forward-safe the moment it is.
+  -- EELEVATE's own real effect text is explicit about this exact
+  -- exemption ("immune to Ground-type moves, as well as the Spikes,
+  -- Toxic Spikes, and Sticky Web statuses"), so it's included alongside
+  -- Levitate rather than assumed already covered by its own typing.
+  local GROUND_IMMUNE_ABILITY = { LEVITATE = true, EELEVATE = true }
+  local function isGroundedForHazards(mon, gen2, types)
+    for _, t in ipairs(types) do
+      if t == "FLYING" then return false end
+    end
+    local abilityIdOf = mod.exports.abilityIdOf
+    local id = abilityIdOf and abilityIdOf(mon)
+    if id and GROUND_IMMUNE_ABILITY[id] then return false end
+    return true
   end
 
   ------------------------------------------------------------------
@@ -156,6 +186,26 @@ return function(mod)
     end,
   })
 
+  -- Sticky Web -- real Gen 6+ hazard, single layer (doesn't stack), -1
+  -- Speed stage to any grounded Pokémon switching in. Confirmed via
+  -- Showdown's own data/moves.ts stickyweb condition: onEntryHazard
+  -- boosts = { spe = -1 }, no immunity beyond the same grounding check
+  -- every other grounded-only hazard already uses.
+  mod.content.move_effects:register("GALAR_STICKYWEB_EFFECT", {
+    kind = "primary",
+    run = function(a, b, c)
+      local n = normalize(a, b, c)
+      local side = n.battle:sideOf(n.target)
+      local h = hazardsFor(n.battle, side)
+      if h.stickyWeb then
+        return { romText(n.battle.data, "_ButItFailedText", "But, it failed!") }
+      end
+      h.stickyWeb = true
+      return { Strings("A sticky web\nspreads out\nunder %s's team!",
+        displayNameFor(n.battle, n.target, n.gen2)) }
+    end,
+  })
+
   ------------------------------------------------------------------
   -- Native Spikes upgrade: Gen 2's own SpikesDamage/EFFECT_SPIKES are a
   -- single, non-stacking layer at a flat 1/8 max HP -- accurate to Gen 2
@@ -176,20 +226,16 @@ return function(mod)
   -- truthy check, which reads identically for 1/2/3 as it did for
   -- `true`, so nothing else needs to change.
   --
-  -- INTERACTION TODO: the Flying-type check below is both Gen 2's
-  -- original grounding rule AND still the bulk of Gen 9's real
-  -- isGrounded() -- but Gen 9's isGrounded() also exempts Levitate and
-  -- is overridden by Gravity/Iron Ball/Ingrain, and Heavy-Duty Boots
-  -- (the universal Gen 8+ hazard-immunity item) exempts a holder
-  -- outright regardless of type. None of Levitate/Gravity/Ingrain exist
-  -- in this engine yet (no abilities are battle-effective, no
-  -- Gravity/Ingrain implemented), and Heavy-Duty Boots isn't part of
-  -- Gen 2's real ROM item roster at all (confirmed this session,
-  -- tools/rom_manifest_gold.json's itemOrder has no such id) -- so the
-  -- item half is structurally moot here, not deferred, while the
-  -- ability/field half is a real future dependency. Revisit the
-  -- Flying-only check in spikesDamage below once Levitate or
-  -- Gravity/Ingrain land.
+  -- Grounding: CLOSED 2026-08-27 -- Flying-type OR Levitate/Eelevate,
+  -- via this file's own shared isGroundedForHazards (defined above,
+  -- now that this mod's ability system is battle-effective). Gravity/
+  -- Iron Ball/Ingrain overriding a normally-airborne mon back to grounded,
+  -- and Heavy-Duty Boots' universal exemption, remain real, separate,
+  -- honestly-named gaps -- Gravity/Ingrain aren't implemented anywhere in
+  -- this engine, and Heavy-Duty Boots isn't part of Gen 2's real ROM item
+  -- roster at all (confirmed this session, tools/rom_manifest_gold.json's
+  -- itemOrder has no such id), so that second half is structurally moot
+  -- here, not deferred.
   ------------------------------------------------------------------
   Battle2.MOVE_EFFECTS.EFFECT_SPIKES = function(self, attacker, defender)
     local side = self:sideOf(defender)
@@ -212,9 +258,12 @@ return function(mod)
     local layers = self.spikes[side] or 0
     if layers <= 0 or (mon.hp or 0) <= 0 then return end
     local def = self:speciesDef(mon)
-    for _, monType in ipairs((def and def.types) or mon.types or {}) do
-      if monType == "FLYING" then return end
-    end
+    local types = (def and def.types) or mon.types or {}
+    if not isGroundedForHazards(mon, true, types) then return end
+    -- Magic Guard, real Showdown rule, fixed 2026-08-28 -- same real
+    -- predicate the Stealth Rock/Sharp Steel blocks above use.
+    local magicGuardBlocksHazard = mod.exports.magicGuardBlocksHazard
+    if magicGuardBlocksHazard and magicGuardBlocksHazard(mon) then return end
     local maxHp = mon.maxHp or (mon.stats and mon.stats.hp) or 8
     local fraction = SPIKES_DAMAGE_24THS[layers] or SPIKES_DAMAGE_24THS[3]
     local damage = math.max(1, math.floor(fraction * maxHp / 24))
@@ -274,10 +323,11 @@ return function(mod)
       -- clears every entry hazard on the user's side, native Spikes
       -- included, so both have to be checked and cleared together.
       local hasSpikes = gen2 and battle.spikes and (battle.spikes[side] or 0) > 0
-      if not (h.stealthRock or h.toxicSpikes > 0 or h.sharpSteel or hasSpikes) then return end
+      if not (h.stealthRock or h.toxicSpikes > 0 or h.sharpSteel or h.stickyWeb or hasSpikes) then return end
       h.stealthRock = false
       h.toxicSpikes = 0
       h.sharpSteel = false
+      h.stickyWeb = false
       if hasSpikes then battle.spikes[side] = 0 end
       local text = Strings("%s blew away\nhazards\nwith its spin!",
         displayNameFor(battle, ev.user, gen2))
@@ -312,13 +362,21 @@ return function(mod)
       local h = hazardsFor(battle, side)
       local types = curTypesOf(battler, gen2)
       local name = displayNameFor(battle, battler, gen2)
+      -- Magic Guard, real Showdown rule, fixed 2026-08-28: this same
+      -- ability already blocks status residual/Gen 1 sand/recoil/
+      -- confusion self-hit (abilities/engine/damage_immunity.lua's own
+      -- real fixes) -- entry hazards are the same real "indirect
+      -- damage" family, checked once here for both blocks below via
+      -- that file's own small exported predicate.
+      local magicGuardBlocksHazard = mod.exports.magicGuardBlocksHazard
+      local hazardImmune = magicGuardBlocksHazard and magicGuardBlocksHazard(mon)
 
       -- Stealth Rock: maxHP * effectiveness(ROCK vs types) / 8, current
       -- Showdown formula (src/battle/TypeChart.lua's own x10 scale
       -- divided back to a real fraction). A 4x-weak mon can faint from
       -- this alone, same as real games -- not clamped beyond the
       -- ordinary max(0, hp-damage) floor.
-      if h.stealthRock then
+      if h.stealthRock and not hazardImmune then
         local mult = TypeChart.effectiveness("ROCK", types) / 10
         if mult > 0 then
           local maxHp = (mon.stats and mon.stats.hp) or mon.maxHp or 1
@@ -344,7 +402,7 @@ return function(mod)
       -- Stealth Rock above may have already fainted this mon. Nothing
       -- currently sets h.sharpSteel (see header INTERACTION TODO) -- this
       -- block is real, working, and simply never triggers yet.
-      if h.sharpSteel and (mon.hp or 0) > 0 then
+      if h.sharpSteel and (mon.hp or 0) > 0 and not hazardImmune then
         local mult = TypeChart.effectiveness("STEEL", types) / 10
         if mult > 0 then
           local maxHp = (mon.stats and mon.stats.hp) or mon.maxHp or 1
@@ -371,18 +429,21 @@ return function(mod)
       -- Stealth Rock/Sharp Steel above in case either alone fainted this
       -- mon.
       if h.toxicSpikes > 0 and (mon.hp or 0) > 0 then
-        local isPoison, isFlyingOrSteel = false, false
+        local isPoison, isSteel = false, false
         for _, t in ipairs(types) do
           if t == "POISON" then isPoison = true end
-          if t == "FLYING" or t == "STEEL" then isFlyingOrSteel = true end
+          if t == "STEEL" then isSteel = true end
         end
-        -- INTERACTION TODO: no Levitate check here -- see header comment.
-        -- isFlyingOrSteel should become "isFlyingOrSteel or hasLevitate(mon)"
-        -- once abilities are battle-effective.
+        -- Grounding half (Flying/Levitate/Eelevate) CLOSED 2026-08-27 --
+        -- this file's own shared isGroundedForHazards, now that abilities
+        -- are battle-effective. Steel's own exemption stays a separate
+        -- check: it's about poison-type immunity, not grounding, so it
+        -- must NOT be folded into that same helper.
+        local unaffected = isSteel or not isGroundedForHazards(battler, gen2, types)
         if isPoison then
           h.toxicSpikes = 0
           battle:sayNext(Strings("%s absorbed\nthe poison spikes!", name))
-        elseif not isFlyingOrSteel then
+        elseif not unaffected then
           local badly = h.toxicSpikes >= 2
           if gen2 then
             -- Confirmed via gen2/Battle.lua:2785-2798: Gen 2 has real
@@ -405,6 +466,42 @@ return function(mod)
           end
         end
       end
+
+      -- Sticky Web: real -1 Speed stage to a grounded switch-in, no
+      -- accuracy check (a field effect, not a move targeting the mon).
+      -- Speed is a NATIVE_STATS stat in this engine (never routes through
+      -- combat/modern_combat.lua's own changeStage, same split this
+      -- mod's own code documents in several other places) -- Gen 2 goes
+      -- through Battle:changeStageAgainstMist (Mist-aware, Clear Body/
+      -- White Smoke/Full Metal Body/Hyper Cutter-aware via that
+      -- function's own Phase 7 extension); Gen 1 writes battler.stages
+      -- .speed directly -- the wrapper itself, NOT battler.mon (real,
+      -- confirmed field location: this is the same object Foresight/
+      -- Miracle Eye's own evasion-cap fix and main.lua's own NATIVE_STATS
+      -- branch both write .stages onto, src/battle/Damage.lua's own
+      -- attacker.stages.speed read is against this same wrapper) --
+      -- gated by the same statDropBlockedByAbility helper and boss-fight
+      -- protection every other opponent-directed stat drop in this mod
+      -- already checks.
+      if h.stickyWeb and (mon.hp or 0) > 0 and isGroundedForHazards(battler, gen2, types) then
+        local statDropBlockedByAbility = mod.exports.statDropBlockedByAbility
+        local blocked = statDropBlockedByAbility and statDropBlockedByAbility(battler, gen2, "speed")
+        if not blocked then
+          if gen2 then
+            -- attacker=nil (not `battler`): changeStageAgainstMist only
+            -- ever uses this param for a `target ~= attacker` hostility
+            -- check (Mist/Clear Body-family), never dereferences it --
+            -- passing the target itself here would have made this read
+            -- as a SELF-inflicted change, skipping both of those checks
+            -- entirely, wrong for an environmental hazard.
+            battle:changeStageAgainstMist(nil, battler, "speed", -1)
+          elseif not (mod.exports.bossStatsDropBlocked and mod.exports.bossStatsDropBlocked(battle, battler, -1)) then
+            battler.stages = battler.stages or {}
+            battler.stages.speed = math.max(-6, (battler.stages.speed or 0) - 1)
+          end
+          battle:sayNext(Strings("%s was\ncaught in a sticky web!", name))
+        end
+      end
     end)
     if not ok then
       mod.log:warn("galar_gmax_dex: modern_hazards: switch-in resolution failed: %s",
@@ -413,5 +510,6 @@ return function(mod)
   end)
 
   mod.log:info("galar_gmax_dex: modern_hazards loaded (Spikes upgraded to Gen 9 "
-    .. "stacking, Stealth Rock, Toxic Spikes, Sharp Steel defined, Rapid Spin)")
+    .. "stacking, Stealth Rock, Toxic Spikes, Sharp Steel, Sticky Web defined, Rapid Spin, "
+    .. "Flying/Levitate/Eelevate grounding exemption)")
 end

@@ -620,8 +620,18 @@ return function(mod, GimmickRing)
       return false
     end
     local st = gState[ctx.battle]
+    -- Real bug fixed 2026-08-28: "LEECH_SEED_EFFECT" matches NEITHER
+    -- Leech Seed's own real native effect strings (gen1Effect=
+    -- "NO_ADDITIONAL_EFFECT", gen2Effect="EFFECT_NORMAL_HIT", confirmed
+    -- by direct read of national_dex's own record) NOR this mod's own
+    -- real patched one -- main.lua's own CUSTOM_EFFECT_PATCH table
+    -- points BOTH Leech Seed and Sappy Seed at the same real id,
+    -- "GALAR_LEECHSEED_EFFECT" -- so this check never matched at all,
+    -- on either generation. Checking the real patched id catches both
+    -- moves that share it in one comparison, the same reason main.lua
+    -- itself maps them both to it rather than two separate patches.
     if st and st.active and target == ctx.battle.player
-        and move and move.effect == "LEECH_SEED_EFFECT" then
+        and move and move.effect == "GALAR_LEECHSEED_EFFECT" then
       return false
     end
     return next(ctx)

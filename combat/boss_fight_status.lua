@@ -84,13 +84,26 @@ return function(mod)
   local Battle = require("src.battle.gen2.Battle")
   local bossFightHas = mod.exports.bossFightHas
   assert(bossFightHas, "boss_fight_status: combat/boss_fight.lua must load first")
+  local nationalDex = mod.find and mod.find("national_dex")
+  assert(nationalDex and nationalDex.exports and nationalDex.exports.moveById,
+    "boss_fight_status: national_dex must be loaded first")
+  local moveById = nationalDex.exports.moveById
 
   ------------------------------------------------------------------
   -- hardStatus
   ------------------------------------------------------------------
+  -- Real N-way "is this the protected enemy side" check -- explicit user
+  -- request (2026-08-28): object identity against `battle.enemy` only
+  -- ever matched the FIRST enemy-side battler, silently leaving battler
+  -- #2/#3 unprotected in a real multi-enemy boss encounter (an add, not
+  -- just the boss itself). `battle:sideOf(mon) == "enemy"` uses the same
+  -- real N-way primitive (combat/move_targeting.lua) every other fix in
+  -- this pass now goes through -- generalizes "the boss is protected" to
+  -- "the whole enemy side is protected," the natural reading of a boss
+  -- fight that includes escorts, not a narrower one.
   local nativeStatusInflict = StatusRegistry.inflict
   StatusRegistry.inflict = function(battle, target, status, opts)
-    if battle and target == battle.enemy and bossFightHas(battle, "hardStatus") then
+    if battle and target and battle:sideOf(target) == "enemy" and bossFightHas(battle, "hardStatus") then
       return {}
     end
     return nativeStatusInflict(battle, target, status, opts)
@@ -98,7 +111,7 @@ return function(mod)
 
   local nativeApplyStatus = Battle.applyStatus
   function Battle:applyStatus(mon, status, source)
-    if mon == self.enemy and bossFightHas(self, "hardStatus") then
+    if mon and self:sideOf(mon) == "enemy" and bossFightHas(self, "hardStatus") then
       return
     end
     return nativeApplyStatus(self, mon, status, source)
@@ -120,7 +133,7 @@ return function(mod)
   mod.events:on("battle.damage_dealt", function(ev)
     local battle = ev and ev.battle
     local target = ev and ev.target
-    if not (battle and target and target == battle.enemy) then return end
+    if not (battle and target and battle:sideOf(target) == "enemy") then return end
     if bossFightHas(battle, "softStatus") then
       local gen2 = mod.exports.isGen2Battle and mod.exports.isGen2Battle(battle)
       if gen2 then
@@ -132,20 +145,15 @@ return function(mod)
   end, -100)
 
   ------------------------------------------------------------------
-  -- antiDrain
+  -- antiDrain -- keyed off the move's own real, live `drain` field
+  -- (national_dex), not a hardcoded effect-id table (migrated
+  -- 2026-08-27 -- the id-table version stopped covering Draining Kiss
+  -- the moment GALAR_DRAIN_EFFECT_75 was retired as dead/Gen-2-broken
+  -- code, main.lua's own installGenericDrainRecoil work; reading the
+  -- field directly means this covers every real drain move generically,
+  -- natively-modeled ones included, not just whichever ids a list
+  -- happened to name).
   ------------------------------------------------------------------
-  -- Effect ids confirmed (direct source read) to be every drain-heal
-  -- path in this engine, native and mod-custom alike, each mapped to its
-  -- own real fraction -- DRAIN_HP_EFFECT/EFFECT_LEECH_HIT/EFFECT_
-  -- DREAM_EATER are native Gen1/Gen2 half-heal; GALAR_DRAIN_EFFECT_75 is
-  -- this mod's own Draining Kiss handler (Gen1-only, per that file's own
-  -- header -- afterDamage never runs on Gen2).
-  local DRAIN_FRACTION = {
-    DRAIN_HP_EFFECT = 1 / 2,
-    EFFECT_LEECH_HIT = 1 / 2,
-    EFFECT_DREAM_EATER = 1 / 2,
-    GALAR_DRAIN_EFFECT_75 = 3 / 4,
-  }
   mod.events:on("battle.damage_dealt", function(ev)
     local battle = ev and ev.battle
     local target = ev and ev.target
@@ -153,10 +161,11 @@ return function(mod)
     local move = ev and ev.move
     local dealt = ev and ev.damage
     if not (battle and target and user and move and dealt and dealt > 0) then return end
-    if target ~= battle.enemy or not bossFightHas(battle, "antiDrain") then return end
-    local fraction = DRAIN_FRACTION[move.effect]
-    if not fraction then return end
-    local harm = math.max(1, math.floor(dealt * fraction))
+    if battle:sideOf(target) ~= "enemy" or not bossFightHas(battle, "antiDrain") then return end
+    local ok, info = pcall(moveById, move.id)
+    local drainPercent = ok and info and (info.drain or 0) > 0 and info.drain or nil
+    if not drainPercent then return end
+    local harm = math.max(1, math.floor(dealt * drainPercent / 100))
     local userMon = user.mon or user
     userMon.hp = math.max(0, (userMon.hp or 0) - harm)
     battle:emit({ kind = "message",

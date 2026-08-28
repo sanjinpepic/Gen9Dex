@@ -59,38 +59,19 @@ return function(mod)
   -- reuse that id even generation risk aside; copies its exact shape
   -- (ctx.rawDamage, ctx.battle:applyDamage) with a configurable fraction.
   ------------------------------------------------------------------
-  local function recoilFraction(effectId, numerator, denominator)
-    mod.content.move_effects:register(effectId, {
-      kind = "full",
-      afterDamage = function(ctx)
-        local recoil = math.max(1, math.floor(ctx.rawDamage * numerator / denominator))
-        ctx.say(romText(ctx.battle.data, "_HitWithRecoilText", "%s's\nhit with recoil!", EffectRegistry.displayName(ctx.user)))
-        ctx.battle:applyDamage(ctx.user, recoil)
-      end,
-    })
-  end
-  recoilFraction("GALAR_RECOIL_EFFECT_3", 1, 3) -- Brave Bird, Wood Hammer: 1/3
-  recoilFraction("GALAR_RECOIL_EFFECT_2", 1, 2) -- Head Smash: 1/2
-
-  ------------------------------------------------------------------
-  -- Drain: user heals a fraction of the RAW damage it just dealt.
-  -- Native DRAIN_HP_EFFECT/drainHalf (MoveEffects.lua:446-458) is
-  -- hardcoded to 1/2 -- Draining Kiss's real Showdown fraction is 3/4, so
-  -- same reasoning as recoil above: same shape, configurable fraction.
-  -- ctx.battle.lastDamage is set to the drained (not raw) amount on
-  -- purpose, mirroring drainHalf's own documented Counter interaction.
-  ------------------------------------------------------------------
-  mod.content.move_effects:register("GALAR_DRAIN_EFFECT_75", {
-    kind = "full",
-    afterDamage = function(ctx)
-      local heal = math.max(1, math.floor(ctx.rawDamage * 3 / 4))
-      ctx.battle.lastDamage = heal
-      local mon = ctx.user.mon
-      mon.hp = math.min(mon.stats.hp, mon.hp + heal)
-      ctx.drain()
-      ctx.say(romText(ctx.battle.data, "_SuckedHealthText", Strings.source("Sucked health from\n%s!"), EffectRegistry.displayName(ctx.target)))
-    end,
-  })
+  -- RETIRED (2026-08-27): recoilFraction/GALAR_RECOIL_EFFECT_3/2 and
+  -- GALAR_DRAIN_EFFECT_75 used to live here, both `kind="full"`/
+  -- `afterDamage`-shaped -- this file's own header above already
+  -- documented that shape as Gen 1-only. GALAR_RECOIL_EFFECT_3/2 were
+  -- registered but never actually patched onto any move at all
+  -- (confirmed by direct grep -- Brave Bird/Wood Hammer/Head Smash had
+  -- zero recoil, on either gen); GALAR_DRAIN_EFFECT_75 WAS patched onto
+  -- Draining Kiss, meaning its drain silently never applied on a Gen 2
+  -- battle, a real live bug. Superseded by a genuinely generic,
+  -- dual-gen-correct handler (main.lua's own installGenericDrainRecoil)
+  -- that reads every move's real `drain` field live off national_dex --
+  -- covers Draining Kiss (now fixed on both gens) and every other real
+  -- drain/recoil move in the roster, not just these four.
 
   ------------------------------------------------------------------
   -- Plain heals (kind="primary", power=0 status moves) -- BattleState's
@@ -143,20 +124,112 @@ return function(mod)
     end,
   })
 
-  -- Synthesis: real Showdown heal is weather-conditional (2/3 in sun,
-  -- 1/4 in other weather, 1/2 with none) -- this engine has no weather
-  -- yet (Phase 4, per the plan), so wired here as the flat "no weather"
-  -- fraction (1/2) ONLY, per this phase's explicit instruction. The
-  -- weather-conditional part is deferred, not silently dropped: Phase 4
-  -- needs to come back and branch this on the weather system it builds.
-  mod.content.move_effects:register("GALAR_SYNTHESIS_EFFECT", {
+  -- Synthesis/Moonlight/Morning Sun: real Showdown heal is
+  -- weather-conditional -- 2/3 max HP in sun, 1/4 in any other real
+  -- weather (rain/sand/snow), 1/2 with none -- fulfilling this file's
+  -- own earlier deferral note (weather didn't exist in this engine yet
+  -- when Synthesis was first wired; it does now, combat/modern_weather
+  -- .lua). All three moves share the identical real formula -- one
+  -- handler, patched onto all three move ids (see main.lua's own
+  -- CUSTOM_EFFECT_PATCH) rather than copy-pasted three times.
+  local function weatherVariableSelfHeal(a, b, c)
+    local n = normalize(a, b, c)
+    local currentWeather = mod.exports.currentWeather
+    local weather = currentWeather and currentWeather(n.battle, n.gen2)
+    -- Mega Sol (Phase 8, other bucket): its own real personal sun
+    -- simulation ("as if the weather were harsh sunlight") extends to
+    -- every real sun-conditional MOVE behavior this engine already
+    -- models, not just the Fire/Water damage multiplier -- Synthesis/
+    -- Moonlight/Morning Sun's own real 2/3-in-sun heal included.
+    local abilityIdOf = mod.exports.abilityIdOf
+    if weather ~= "SUN" and abilityIdOf and abilityIdOf(n.user) == "MEGASOL" then
+      weather = "SUN"
+    end
+    local ok
+    if weather == "SUN" then
+      ok = healFraction(n.user, 2, 3)
+    elseif weather == "RAIN" or weather == "SAND" or weather == "SNOW" then
+      ok = healFraction(n.user, 1, 4)
+    else
+      ok = healFraction(n.user, 1, 2)
+    end
+    if not ok then
+      return { romText(n.battle.data, "_ButItFailedText", "But, it failed!") }
+    end
+    return { Strings("%s's\nHP was restored!", displayNameFor(n.battle, n.user, n.gen2)) }
+  end
+  mod.content.move_effects:register("GALAR_SYNTHESIS_EFFECT", { kind = "primary", run = weatherVariableSelfHeal })
+  mod.content.move_effects:register("GALAR_MOONLIGHT_EFFECT", { kind = "primary", run = weatherVariableSelfHeal })
+  mod.content.move_effects:register("GALAR_MORNINGSUN_EFFECT", { kind = "primary", run = weatherVariableSelfHeal })
+
+  -- Shore Up: real Showdown heal is 2/3 max HP during sandstorm, 1/2
+  -- otherwise -- a single-condition variant of the same weather-read
+  -- shape above, not worth generalizing further for just one move.
+  mod.content.move_effects:register("GALAR_SHOREUP_EFFECT", {
     kind = "primary",
     run = function(a, b, c)
       local n = normalize(a, b, c)
-      if not healFraction(n.user, 1, 2) then
+      local currentWeather = mod.exports.currentWeather
+      local weather = currentWeather and currentWeather(n.battle, n.gen2)
+      local ok = (weather == "SAND") and healFraction(n.user, 2, 3) or healFraction(n.user, 1, 2)
+      if not ok then
         return { romText(n.battle.data, "_ButItFailedText", "But, it failed!") }
       end
       return { Strings("%s's\nHP was restored!", displayNameFor(n.battle, n.user, n.gen2)) }
+    end,
+  })
+
+  -- Floral Healing: real Showdown heal is 2/3 max HP on Grassy Terrain,
+  -- 1/2 otherwise -- TARGET-directed (heals the target, not the user --
+  -- confirmed via its own real prose text), same accuracyChecked shape
+  -- Heal Pulse above already uses for the identical reason.
+  mod.content.move_effects:register("GALAR_FLORALHEALING_EFFECT", {
+    kind = "primary",
+    accuracyChecked = true,
+    run = function(a, b, c)
+      local n = normalize(a, b, c)
+      local onGrassyTerrain = n.battle.terrain == "GRASSY"
+      local ok = onGrassyTerrain and healFraction(n.target, 2, 3) or healFraction(n.target, 1, 2)
+      if not ok then
+        return { romText(n.battle.data, "_ButItFailedText", "But, it failed!") }
+      end
+      return { Strings("%s's\nHP was restored!", displayNameFor(n.battle, n.target, n.gen2)) }
+    end,
+  })
+
+  -- Purify: cures the TARGET's major status and heals the USER 50% max
+  -- HP -- fails if the target has no status to cure (real Showdown
+  -- rule), regardless of the user's own HP. Reuses abilities/engine/
+  -- status_cure.lua's own cureStatusOf (looked up lazily -- that file
+  -- loads much later, but this handler only ever runs during a real
+  -- battle, by which point every mod has finished loading).
+  mod.content.move_effects:register("GALAR_PURIFY_EFFECT", {
+    kind = "primary",
+    accuracyChecked = true,
+    run = function(a, b, c)
+      local n = normalize(a, b, c)
+      local cureStatusOf = mod.exports.cureStatusOf
+      if not (cureStatusOf and cureStatusOf(n.target)) then
+        return { romText(n.battle.data, "_ButItFailedText", "But, it failed!") }
+      end
+      healFraction(n.user, 1, 2)
+      return { Strings("%s\nwas cured of its\nstatus condition!", displayNameFor(n.battle, n.target, n.gen2)) }
+    end,
+  })
+
+  -- Lunar Blessing: heals the USER (and allies, no ally slot to reach
+  -- in this engine today) 25% max HP and cures its own status --
+  -- unconditional (never "but it failed," matching real Blessing-family
+  -- moves), so the two actions run independently rather than one
+  -- gating the other.
+  mod.content.move_effects:register("GALAR_LUNARBLESSING_EFFECT", {
+    kind = "primary",
+    run = function(a, b, c)
+      local n = normalize(a, b, c)
+      local cureStatusOf = mod.exports.cureStatusOf
+      healFraction(n.user, 1, 4)
+      if cureStatusOf then cureStatusOf(n.user) end
+      return { Strings("%s\nwas blessed\nby the full moon!", displayNameFor(n.battle, n.user, n.gen2)) }
     end,
   })
 
@@ -252,7 +325,13 @@ return function(mod)
         user.thrashTurns = user.thrashTurns - 1
         if user.thrashTurns <= 0 then
           user.thrashTurns, user.thrashMove, user.thrashAnnounced = nil, nil, nil
-          if not user.confusedTurns then
+          -- Phase 3a (abilities/engine/status_immunity.lua): OWNTEMPO
+          -- blocks real self-inflicted rampage confusion too, not just
+          -- hostile confusion -- unlike boss-fight softStatus (hostile-
+          -- only in scope, this site deliberately left untouched there).
+          local hasStatusImmunity = mod.exports.hasStatusImmunity
+          if not user.confusedTurns
+              and not (hasStatusImmunity and hasStatusImmunity(user, "confusion", ctx.battle)) then
             user.confusedTurns = ctx.rng(2, 5)
             ctx.say(romText(ctx.battle.data, "_BecameConfusedText", "%s\nbecame confused!", EffectRegistry.displayName(user)))
           end
@@ -279,6 +358,177 @@ return function(mod)
       end
     end,
   })
+
+  ------------------------------------------------------------------
+  -- Gen 2 halves of Bounce/Eternabeam/Outrage/Raging Fury/Uproar, added
+  -- 2026-08-27.
+  --
+  -- Neither of these adds a `.run` field to the records above: Gen 2's
+  -- dispatch calls ANY record's `.run` field, if present, and returns
+  -- immediately without ever reaching its own real damage path (the
+  -- exact bug this file's own header already documents for the old
+  -- flinch/confuse code) -- fatal for a move with real power like these
+  -- two, not just a silent no-op. Both additions below instead use
+  -- primitives already confirmed safe for a damaging move on Gen 2: a
+  -- plain data table Gen 2's own native charge system already reads
+  -- (Bounce's charge turn), and a `battle.damage_dealt` listener (fires
+  -- AFTER Gen 2's own real damage path already ran).
+  ------------------------------------------------------------------
+  local isGen2Battle = mod.exports.isGen2Battle
+
+  -- Bounce, Gen 2 charge turn: Effects.CHARGE is a plain Lua table Gen
+  -- 2's own native move-execution gate already reads generically
+  -- (`Effects.CHARGE[def.effect]`, gen2/Battle.lua) -- confirmed by
+  -- direct read, not a schema-validated registry the way move_effects
+  -- ids are, so adding a new key here carries none of the cross-
+  -- generation id-validation risk this file's own header already flags
+  -- for Outrage below. GALAR_BOUNCE_EFFECT is the SAME id already
+  -- patched onto Bounce for Gen 1 (CUSTOM_EFFECT_PATCH, main.lua) --
+  -- Gen 2's native system reads it off the identical live `.effect`
+  -- field, no second patch needed.
+  local Gen2Effects = require("src.battle.gen2.Effects")
+  Gen2Effects.CHARGE.GALAR_BOUNCE_EFFECT = { text = "%s sprang up!", vanish = true }
+
+  -- Bounce, Gen 2 release-turn paralyze (real 30% chance, same fraction
+  -- the Gen 1 registration above already uses) -- gen2-only, Gen 1's own
+  -- afterDamage handler above already covers that engine.
+  mod.events:on("battle.damage_dealt", function(ev)
+    local battle = ev and ev.battle
+    local moveId = ev and ((ev.move and ev.move.id) or ev.moveId)
+    local target = ev and ev.target
+    local user = ev and ev.user
+    if not (battle and moveId == "BOUNCE" and target and user and (ev.damage or 0) > 0) then return end
+    if not (isGen2Battle and isGen2Battle(battle)) then return end
+    if battle.random(100) >= 30 then return end
+    battle:applyStatus(target, "paralyze", "BOUNCE")
+  end)
+
+  -- Eternabeam, both gens' recharge -- Gen 1's own afterDamage handler
+  -- above already covers that engine correctly (including the real
+  -- skip-recharge-on-KO rule); this only adds the Gen 2 half, via the
+  -- same real generic `vol.recharge` flag Gen 2's own native `checkTurn`
+  -- already consumes unconditionally (confirmed by direct read,
+  -- gen2/Battle.lua -- it does not care which move set the flag).
+  mod.events:on("battle.damage_dealt", function(ev)
+    local battle = ev and ev.battle
+    local moveId = ev and ((ev.move and ev.move.id) or ev.moveId)
+    local target = ev and ev.target
+    local user = ev and ev.user
+    if not (battle and moveId == "ETERNABEAM" and target and user and (ev.damage or 0) > 0) then return end
+    if not (isGen2Battle and isGen2Battle(battle)) then return end
+    local targetMon = target.mon or target
+    if (targetMon.hp or 0) > 0 then
+      battle:volatile(user).recharge = true
+    end
+  end)
+
+  ------------------------------------------------------------------
+  -- Outrage / Raging Fury / Uproar, Gen 2 rampage-lock -- closed
+  -- 2026-08-27. The earlier pass here tried to cooperate with Gen 2's
+  -- own hardcoded `def.effect == "EFFECT_RAMPAGE"` check inside its
+  -- central move-execution gate, found no safe way to alias a custom id
+  -- onto it, and left the whole mechanic unclosed as a result. Wrong
+  -- move: this mod doesn't need that check to cooperate at all -- we
+  -- own the lock-in DECISION ourselves (the same "we are the bible of
+  -- combat" principle already applied to paralysis/sleep/freeze turn-
+  -- loss) and simply force the ACTUAL move executed, via
+  -- Battle:useMove, regardless of what Gen 2's own selection/AI logic
+  -- thinks it chose. No native cooperation needed at all.
+  ------------------------------------------------------------------
+  local RAMPAGE_LOCK_MOVES = { OUTRAGE = true, RAGINGFURY = true, UPROAR = true }
+  mod.events:on("battle.damage_dealt", function(ev)
+    local battle = ev and ev.battle
+    local moveId = ev and ((ev.move and ev.move.id) or ev.moveId)
+    local user = ev and ev.user
+    if not (battle and moveId and user and (ev.damage or 0) > 0) then return end
+    if not (isGen2Battle and isGen2Battle(battle)) then return end
+    if not RAMPAGE_LOCK_MOVES[moveId] then return end
+    local vol = battle:volatile(user)
+    if not vol.rampageMoveId then
+      vol.rampageMoveId = moveId
+      -- Real durations: Outrage/Raging Fury lock for 2-3 more turns
+      -- (rand+2); Uproar locks for exactly 3 (Showdown-verified,
+      -- data/moves.ts).
+      vol.rampageTurns = (moveId == "UPROAR") and 3 or (battle.random(2) + 2)
+    else
+      vol.rampageTurns = vol.rampageTurns - 1
+      if vol.rampageTurns <= 0 then
+        vol.rampageMoveId, vol.rampageTurns = nil, nil
+        -- Real rule: Outrage/Raging Fury confuse the user when the lock
+        -- ends; Uproar does not.
+        if moveId ~= "UPROAR" then
+          local hasStatusImmunity = mod.exports.hasStatusImmunity
+          if not (hasStatusImmunity and hasStatusImmunity(user, "confusion", battle)) then
+            battle:applyConfusion(user, nil, moveId)
+          end
+        end
+      end
+    end
+  end)
+  -- Force the locked move regardless of what was actually selected --
+  -- the real, direct ownership mechanism: WE decide what executes, the
+  -- native dispatch underneath just runs whatever moveId it's handed.
+  do
+    local Battle2 = require("src.battle.gen2.Battle")
+    local nativeUseMoveRampage = Battle2.useMove
+    function Battle2:useMove(attacker, defender, moveId)
+      if attacker then
+        local vol = self:volatile(attacker)
+        if vol.rampageMoveId and vol.rampageMoveId ~= moveId then
+          moveId = vol.rampageMoveId
+        end
+      end
+      return nativeUseMoveRampage(self, attacker, defender, moveId)
+    end
+  end
+  -- Uproar's own real extra effect (both engines): wakes every active
+  -- sleeping mon the turn it's used. Gen 1's own registration below
+  -- already has this via beforeAccuracy; this is the Gen 2 half.
+  mod.events:on("battle.damage_dealt", function(ev)
+    local battle = ev and ev.battle
+    local moveId = ev and ((ev.move and ev.move.id) or ev.moveId)
+    if not (battle and moveId == "UPROAR") then return end
+    if not (isGen2Battle and isGen2Battle(battle)) then return end
+    for _, mon in ipairs(mod.exports.allActiveBattlers and mod.exports.allActiveBattlers(battle) or { battle.player, battle.enemy }) do
+      if mon and mon.status == "sleep" then mon.status = nil end
+    end
+  end)
+
+  ------------------------------------------------------------------
+  -- Electro Shot: real 2-turn charge move, raises the user's own
+  -- Special Attack on the charge turn, skips the charge entirely in
+  -- rain (Showdown-verified, data/moves.ts). Mirrors Solar Beam's own
+  -- established shape exactly: Gen 1 registration + a Gen 1-only
+  -- BattleState:performMove wrap for the rain-skip (same technique,
+  -- same file that already documents why no sanctioned hook exists for
+  -- this), Gen 2 gets the real charge turn via the same Effects.CHARGE
+  -- table entry Bounce/Solar Beam's own Gen 2 fixes already use -- the
+  -- Special-Attack-on-charge-turn half and the rain-skip are NOT built
+  -- for Gen 2 (no clean multi-gen hook found for "run custom code on
+  -- just the charge turn" -- a real, smaller, flagged gap, same
+  -- shape as Solar Beam's own remaining sun-skip-on-Gen-2 gap).
+  ------------------------------------------------------------------
+  mod.content.move_effects:register("GALAR_ELECTROSHOT_EFFECT", {
+    kind = "full",
+    charge = { anim = "XSTATITEM_ANIM", enemyAnim = "XSTATITEM_DUPLICATE_ANIM" },
+  })
+  require("src.battle.gen2.Effects").CHARGE.GALAR_ELECTROSHOT_EFFECT = { text = "%s absorbed electricity!" }
+
+  local BattleState = require("src.battle.BattleState")
+  local nativePerformMove = BattleState.performMove
+  function BattleState:performMove(user, target, moveInst, isCalled)
+    if moveInst and moveInst.id == "ELECTROSHOT" and not isGen2Battle(self) and not user.charging then
+      local currentWeather = mod.exports.currentWeather
+      local changeStage = mod.exports.changeStage
+      if currentWeather and currentWeather(self, false) == "RAIN" then
+        user.charging = moveInst
+        user.chargeReady = true
+      elseif changeStage then
+        for _, m in ipairs(changeStage(self, user, "spa", 1, false, false)) do self:sayNext(m) end
+      end
+    end
+    return nativePerformMove(self, user, target, moveInst, isCalled)
+  end
 
   mod.log:info("galar_gmax_dex: modern_movepool_damage loaded")
 end

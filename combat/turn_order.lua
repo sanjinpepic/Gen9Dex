@@ -90,11 +90,45 @@ return function(mod)
   -- included, checked with `~= nil` rather than truthiness) so it is read
   -- FIRST; Battle.PRIORITY is kept only as the fallback for a record that
   -- somehow has no priority field of its own.
-  function Battle:movePriority(moveId)
+  --
+  -- Phase 5 (abilities/engine/priority_change.lua): registerPriorityModifier
+  -- -- the same composable-chain shape registerDamageModifier already is
+  -- (combat/modern_combat.lua), just for priority instead of damage.
+  -- `caster` is a NEW, OPTIONAL 2nd param -- every existing call site
+  -- (this file's own resolveTurnActions/battle.turn_order wrap below, plus
+  -- combat/modern_terrain.lua's Psychic Terrain block) now passes it, but
+  -- it defaults to nil for any other caller (e.g. tests/
+  -- gen2_battle_ui_test.lua's own direct calls), which simply skips every
+  -- modifier -- an ability can never change priority without knowing WHO
+  -- is using the move, so "no caster given" correctly means "base priority
+  -- only," identical to this function's pre-existing behavior.
+  local priorityModifiers = {} -- { {id=, fn=fn(battle,moveId,caster,def)->delta}, ... }
+  local function registerPriorityModifier(id, fn)
+    assert(type(id) == "string" and id ~= "", "priority modifier id is required")
+    assert(type(fn) == "function", "priority modifier must be a function")
+    for i, entry in ipairs(priorityModifiers) do
+      if entry.id == id then table.remove(priorityModifiers, i) break end
+    end
+    table.insert(priorityModifiers, { id = id, fn = fn })
+  end
+  mod.exports.registerPriorityModifier = registerPriorityModifier
+
+  function Battle:movePriority(moveId, caster)
     local def = self:moveDef(moveId)
-    if not def then return 0 end
-    if def.priority ~= nil then return def.priority end
-    return Battle.PRIORITY[def.effect] or 0
+    local base
+    if not def then
+      base = 0
+    elseif def.priority ~= nil then
+      base = def.priority
+    else
+      base = Battle.PRIORITY[def.effect] or 0
+    end
+    if caster then
+      for _, entry in ipairs(priorityModifiers) do
+        base = base + (entry.fn(self, moveId, caster, def) or 0)
+      end
+    end
+    return base
   end
 
   -- A never-nil 0..n-1 roller, the same convention Battle:roller() uses
@@ -234,6 +268,40 @@ return function(mod)
   end
 
   ------------------------------------------------------------------
+  -- mod.exports.orderActiveBattlers(battle, battlers) -> orderedBattlers
+  -- The real N-way generalization of orderSwitchInMons above, explicit
+  -- user request (2026-08-28): the fixed player-then-enemy switch-in
+  -- ordering pattern every switch-in ability engine in this mod used
+  -- (`local first, second = battle.player, battle.enemy; if order then
+  -- ... end`) only ever covered exactly two simultaneous switch-ins --
+  -- real Showdown doubles/triples resolves a whole LEAD of 4-6
+  -- simultaneously-entering Pokemon in fastest-first application order,
+  -- same rule, just more than two actors. Reuses computeTurnOrder
+  -- directly (already asymmetric-ready by construction, this file's own
+  -- header) rather than a parallel N-way comparator -- same fastest-
+  -- first APPLICATION order convention orderSwitchInMons already
+  -- established (the LAST battler returned is the one that "wins" any
+  -- exclusive, overwrite-shaped shared state, e.g. weather/terrain).
+  ------------------------------------------------------------------
+  mod.exports.orderActiveBattlers = function(battle, battlers)
+    if not (battle and type(battlers) == "table") then return battlers or {} end
+    local actors, byId = {}, {}
+    for i, mon in ipairs(battlers) do
+      if mon then
+        local actor = { id = i, priority = 0, speed = battle:effectiveSpeed(mon) }
+        actors[#actors + 1] = actor
+        byId[i] = mon
+      end
+    end
+    local ordered = computeTurnOrder(actors, { trickRoom = false, roller = battle:roller() })
+    local result = {}
+    for i, entry in ipairs(ordered) do
+      result[i] = byId[entry.id]
+    end
+    return result
+  end
+
+  ------------------------------------------------------------------
   -- mod.exports.resolveTurnActions(battle, actingBattlers) -- the real
   -- multi-battler integration seam MULTI_BATTLE_HOOKS.md specs and this
   -- was, until now, "not yet built." A caller (a multi-battler combat
@@ -302,7 +370,7 @@ return function(mod)
       if entry.mon and (entry.mon.hp or 0) > 0 and entry.move then
         actors[#actors + 1] = {
           id = entry, -- the battler entry itself, not an index -- identity
-          priority = battle:movePriority(entry.move),
+          priority = battle:movePriority(entry.move, entry.mon),
           speed = effectiveSpeedFor(battle, entry.mon),
         }
       end
@@ -340,13 +408,30 @@ return function(mod)
   -- any future multi-battler caller will use, so the 2-actor case today
   -- and any future N-actor case are provably one algorithm, not two.
   ------------------------------------------------------------------
+  -- CONFIRMED CRASH, this session (2026-08-27): "battle.turn_order" is
+  -- NOT a Gen-2-exclusive hook name -- Gen 1's own BattleState:resolveTurn
+  -- (src/battle/BattleState.lua:2736-2739) calls the identical hook name,
+  -- and Runtime.wantsHook only checks whether ANYTHING is registered for
+  -- that name, not which engine registered it -- so this wrap fires for
+  -- Gen 1 battles too the instant it's installed. Gen 1's own call passes
+  -- a completely different ctx shape (`{ rng = self.rng }`, confirmed by
+  -- direct read -- no .battle field at all), so `local battle = ctx.battle`
+  -- silently evaluated to nil and every following battle: call crashed
+  -- (attempt to index a nil value) on the first turn of any Gen 1 battle.
+  -- Gen 1 does not get Gen-9-accurate turn order from this file at all
+  -- yet (that's real, separate work, not yet built) -- this guard only
+  -- stops the crash by falling through to Gen 1's own native comparator
+  -- (nextFn) whenever ctx doesn't look like Gen 2's own shape.
   mod.hooks:wrap("battle.turn_order",
     function(nextFn, playerBattler, playerMoveDef, enemyBattler, enemyMoveDef, ctx)
-      local battle = ctx.battle
+      local battle = ctx and ctx.battle
+      if not battle then
+        return nextFn(playerBattler, playerMoveDef, enemyBattler, enemyMoveDef, ctx)
+      end
       local actors = {
-        { id = "player", priority = battle:movePriority(ctx.playerMove),
+        { id = "player", priority = battle:movePriority(ctx.playerMove, battle.player),
           speed = battle:effectiveSpeed(battle.player) },
-        { id = "enemy", priority = battle:movePriority(ctx.enemyMove),
+        { id = "enemy", priority = battle:movePriority(ctx.enemyMove, battle.enemy),
           speed = battle:effectiveSpeed(battle.enemy) },
       }
       local ordered = computeTurnOrder(actors, {

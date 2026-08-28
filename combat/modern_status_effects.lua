@@ -147,6 +147,12 @@ return function(mod)
     tStore.attract = true
     return true, Strings("%s fell in love!", displayNameFor(battle, target, gen2))
   end
+  -- Exported for reuse -- Cute Charm (abilities/engine/inflict_status
+  -- .lua) needs this exact same real, gender-aware, Substitute-aware
+  -- primitive, just with the two roles reversed from a normal Attract
+  -- move (the ATTACKER falls for the ABILITY HOLDER, not the other way
+  -- around).
+  mod.exports.tryAttract = tryAttract
 
   mod.content.move_effects:register("GMAX_ATTRACT_EFFECT", {
     kind = "primary",

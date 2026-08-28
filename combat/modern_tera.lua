@@ -180,7 +180,7 @@ return function(mod)
   mod.events:on("battle.ended", function(ev)
     local battle = ev and ev.battle
     if not battle then return end
-    for _, mon in ipairs({ battle.player, battle.enemy }) do
+    for _, mon in ipairs(mod.exports.allActiveBattlers and mod.exports.allActiveBattlers(battle) or { battle.player, battle.enemy }) do
       if mon then
         mon.teraActive = nil
         mon.teraStellarUsedTypes = nil

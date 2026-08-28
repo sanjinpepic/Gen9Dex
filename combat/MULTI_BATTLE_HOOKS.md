@@ -33,9 +33,13 @@ battler we've never heard of. This is already true today.
 
 ## The actual integration contract — battler identity only
 
-**Not yet built** (see "What's still missing" below for exactly why), but
-this is the target shape, settled through direct discussion rather than
-guessed at:
+**BUILT** (2026-08-27, `combat/turn_order.lua`) — this section used to say
+"not yet built" and that claim went stale without anyone updating it,
+which is exactly what led a later session to wrongly conclude no real
+multi-battler combat exists in this ecosystem at all (it does —
+`g9-Battle-Scene`'s own `combat.lua`/`battle_screen.lua` already drive
+real singles/doubles/triples/boss-fight rosters through this exact
+function). The shape below is the real, live signature, not a proposal:
 
 ```lua
 mod.exports.resolveTurnActions(battle, actingBattlers) -> nil
@@ -105,9 +109,23 @@ exactly the caller-side computation the contract above exists to avoid.
 
 ## What's still missing — stated honestly, not papered over
 
-Even with `resolveTurnActions` fully built, it cannot be exercised yet
-because two engine-level gaps sit underneath it, neither reachable from
-mod code as it stands:
+**UPDATE, 2026-08-28: `g9-Battle-Scene` already brought this.** The two
+gaps below are still real and unfixable from inside `gen1recomp-dev`
+itself, but a real caller doesn't need either one fixed to run doubles/
+triples combat — `g9-Battle-Scene`'s own `combat.lua`/`battle_screen.lua`
+sidestep both simply by never routing multi-battler turn resolution
+through `runTurn`/`Battle:takeTurn`/`battle.player`/`battle.enemy` in the
+first place: it keeps its own real, N-agnostic roster
+(`self.enemyBattlers[i]`/`self.playerBattlers[i]`, explicitly built
+"looped, not hardcoded to exactly 2"), drives its own turn loop from
+player menu input, and calls `resolveTurnActions(battle, actingBattlers)`
+directly with however many real battlers are acting — `battle.player`/
+`battle.enemy` end up mattering only as whatever `Battle.new` happened to
+set them to (the party's first living mon per side), a detail the actual
+combat math never depends on. This is a *cleaner* solution than either
+gap below anticipated, not a workaround for them — no monkeypatch of
+`Battle:takeTurn` was needed at all. Left below for what they still
+genuinely constrain (see the real, still-open `sideOf` gap right after):
 
 1. **No mid-turn hook exists.** `gen2/Battle.lua`'s own turn-resolution
    function (`runTurn`) is a `local function`, not `Battle.runTurn` — it
@@ -116,29 +134,16 @@ mod code as it stands:
    *defined inside* it — doubly unreachable. There is no code running
    between the first action finishing and the second one starting that a
    mod could attach to. `battle.turn_order` is the only exposed hook, and
-   it fires exactly once, before either action executes.
+   it fires exactly once, before either action executes. Still true, and
+   still why `g9-Battle-Scene` never calls `runTurn`/`Battle:takeTurn` at
+   all for its own battles rather than trying to hook into either.
 
-2. **No multi-battler data model exists.** `battle.player`/`battle.enemy`
-   are the only two battler slots anywhere in this engine's Gen 2 Battle
-   class — not an array, two fixed fields. There is no third or fourth
-   slot to reorder into in the first place.
-
-**What a real doubles/triples/asymmetric mod needs to bring**, since
-neither of these can be added from outside `gen1recomp-dev` itself:
-
-- A genuine queue or ordered-actor-list concept, replacing the two fixed
-  fields, sized to however many battlers the format needs (2, 3, or an
-  asymmetric count), with each battler's own chosen move/target(s)
-  attached to it at submission time.
-- Its own turn-resolution loop — almost certainly meaning monkeypatching
-  the *public* `Battle:takeTurn` method (unlike `runTurn`, this one is
-  reachable) and reimplementing what it currently does natively: switch
-  handling, item handling, run-away handling, obedience checks, Struggle
-  substitution, charge/locked-move state, disabled-move checks, the
-  fainted-actor skip, wild Roar/Whirlwind ending the battle mid-turn —
-  all of it, for however many slots exist. This is a genuine fork of
-  engine logic, not an addition to it — real, substantial work, not a
-  hook request.
+2. **No multi-battler data model exists inside `gen2/Battle.lua`
+   itself.** `battle.player`/`battle.enemy` are still the only two
+   battler slots on the native class — not an array, two fixed fields.
+   Still true; still why a THIRD or later battler's own real identity has
+   to live entirely in the calling mod's own arrays (exactly what
+   `g9-Battle-Scene` does), never in the Battle instance itself.
 - A real, N-way `Battle:sideOf(mon)`. The native one is a hard binary --
   `(mon == self.player) and "player" or "enemy"`, literally a two-way
   ternary -- and `dealDamage` and other native code call it internally to
@@ -159,23 +164,151 @@ the whole re-sort-after-every-action mechanic (PR #6100's actual rule)
 falls out for free — it's already how `resolveTurnActions` is specified
 to work.
 
-## Also not built yet: spread-move damage reduction
+## Targeting: the same ownership split, applied to adjacency
 
-Real Gen 9 rule: a move that hits more than one target the same turn
-(Earthquake, Surf, Discharge, etc. in an actual multi-battler format)
-deals 0.75x damage to each target hit, versus full damage against a
-single target. TODO, flagged in `modern_combat.lua`'s own
-`registerDamageModifier` header — needs a target COUNT on the damage
-`ctx`, which nothing in this 2-battler engine can ever produce above 1.
-Same root cause as everything else in this document: no multi-battler
-data model exists yet.
+**Update, 2026-08-27**: this half is now real, built, and waiting —
+unlike turn order, targeting doesn't need the engine-level battler-slot
+gap closed first, since it's a pure per-move-use function of data a
+caller hands in, not a standing turn-resolution loop.
+
+`combat/move_targeting.lua` exports:
+
+```lua
+mod.exports.resolveMoveTargets(battle, caster, moveId, chosenTarget) -> { battler, ... }
+```
+
+Same principle as `resolveTurnActions`, but **the trigger for asking a
+caller for position data lives on OUR side, not theirs.** An earlier
+draft of this had battle scene call a query function first to decide
+whether to bother calling the resolver — correctly rejected: that put a
+comparator over move data on the wrong side of the seam, for a fact
+only this mod needs to know (the move's own real `target` archetype).
+
+`chosenTarget` is just whatever single mon the caller already has in
+hand — the same thing it would otherwise pass straight to
+`battle:useMove` as the defender, never a separately-built "adjacency
+bundle." For the overwhelming majority of moves (real archetype
+`"selected-pokemon"`), that's the whole story — `resolveMoveTargets`
+returns `{chosenTarget}` and never asks anyone for anything.
+
+Only for the two archetypes that structurally can't be satisfied by one
+already-known target — `"all-other-pokemon"` (Earthquake, Surf — every
+adjacent battler except the caster, both sides at once) and
+`"all-opponents"` (Muddy Water — every adjacent enemy only), both
+confirmed directly against live national_dex records — does this file
+fire a request, through the same hook bus `combat/turn_order.lua`
+already uses for `battle.turn_order` (confirmed generic in
+`src/mods/Runtime.lua`/`Hooks.lua`, not engine-exclusive — any code can
+call a named hook, any mod can wrap one):
+
+```lua
+Runtime.call("g9.request_adjacency", fallbackFn, battle, caster, moveId)
+-- -> { allies = {...}, enemies = {...} }  -- real roster, caster excluded
+```
+
+A battle-scene mod's entire contribution is one handler:
+
+```lua
+mod.hooks:wrap("g9.request_adjacency", function(nextFn, battle, caster, moveId)
+  return { allies = {...}, enemies = {...} }
+end, 0, "your-mod-id")
+```
+
+No move-awareness, no branching, no comparator on that side at all — it
+answers a position query whenever one arrives, full stop. We decide
+when to ask; it only ever answers. Without a battle-scene mod wrapping
+this hook, a built-in fallback degrades correctly to today's native
+two-battler case (the other of `battle.player`/`battle.enemy` is the
+only possible adjacent enemy, no allies exist) — so this is already
+correct, with zero wiring, for every format this engine runs today.
+
+Boss-fight rule, explicit and caller-side: in a boss fight, the
+`allies` a wrapped handler reports should be the FULL ally roster
+regardless of real proximity ("adjacent allies = all allies,"
+independent of which boss-fight protections are active) — this file
+has no roster to enforce that against, it can only honor whatever list
+it's handed.
+
+**Second real consumer, not move-triggered**: `move_targeting.lua` also
+exports the underlying primitive directly —
+
+```lua
+mod.exports.requestAdjacency(battle, caster, moveId) -> { allies = {...}, enemies = {...} }
+```
+
+— for anything that needs real adjacent-battler position without
+resolving a move's target list at all. `abilities/engine/
+switchin_stat_change.lua`'s foes-scope switch-in abilities (Intimidate,
+Intrepid Sword, Dauntless Shield) are the first real case: the real
+rule is "every adjacent opponent," not "the" opponent, and a hard-binary
+`(mon == battle.player) and battle.enemy or battle.player` lookup was
+exactly the class of gap this doc's own sideOf section warns about —
+correct only for today's 2-battler case. `moveId` is optional here (nil
+for a non-move trigger) — a wrapped handler never inspects it regardless
+(no move-awareness, ever), so this reuses the exact same hook and the
+exact same battle-scene-side contract with nothing new to implement.
+
+**Spread-move damage reduction is now real too**, built directly on this:
+`combat/modern_combat.lua`'s own `computeModernDamage` reads
+`ctx.opts.targetCount` (a new, purely additive field on the same `opts`
+table it already threads through — absent or 1 on every call site today,
+so a genuine no-op until a real caller sets it) and applies the real Gen
+9 0.75x-per-target rule whenever it's above 1, EXCEPT against a
+protected boss (explicit user rule: AoE diminishing is removed entirely
+in a boss fight, regardless of which boss-fight flags are active — Life
+Dew and Earthquake hit everyone at full force).
+
+**UPDATE, 2026-08-28**: the reason this used to be blocked (nothing
+wrapped `"g9.request_adjacency"` with real position data) is CLOSED —
+`g9-Battle-Scene/battle_screen.lua` now answers it from its own real
+roster. That does NOT mean spread moves are callable end to end yet,
+though — a real, DIFFERENT gap sits above it, found while fixing the
+first one rather than assumed away: `g9-Battle-Scene`'s own turn-
+resolution (`combat.lua`'s `Combat.resolveTurn`) never actually calls
+`resolveMoveTargets` at all — it builds `actingBattlers` with exactly
+one `target = action.target.mon` per acting battler, straight from
+whatever the player/AI chose, and hands that directly to
+`resolveTurnActions`. A spread move used through that flow today still
+only ever hits the one chosen target, never expanding to the real
+roster this file's own adjacency fix now makes available. Closing that
+needs `g9-Battle-Scene`'s own queued-action building to call
+`resolveMoveTargets(battle, caster, moveId, chosenTarget)` and loop
+`useMove` once per resolved target (exactly the call-flow the paragraph
+below already specifies) — not yet done. The `"selected-pokemon"` path
+(the overwhelming majority of moves) needs nothing new at all and is
+already correct today, since it's driven entirely by `chosenTarget` —
+whatever the caller already has.
+
+The call-flow: whoever drives move execution (today, nothing new —
+that's still the native `useMove` dispatch; eventually, whatever loop
+`resolveTurnActions` ends up calling) calls `resolveMoveTargets(battle,
+caster, moveId, chosenTarget)` at the point it would otherwise call
+`battle:useMove(...)` directly. For a multi-target result (more than
+one battler in the returned list, only possible on the two spread
+archetypes), it loops `useMove` once per resolved target, passing
+`opts.targetCount = #targets` each time so the spread-reduction
+modifier in `modern_combat.lua` applies correctly.
 
 ## The actual ask, if you're building this
 
 Bring the battler slots and the turn-resolution loop. Call
-`mod.exports.resolveTurnActions(battle, actingBattlers)` once it exists,
-handing us only battler identity — not priority, not Speed, not targets,
-not a comparator. Everything about *what a battler is* and *when it
+`mod.exports.resolveTurnActions(battle, actingBattlers)`, handing us only
+battler identity — not priority, not Speed, not targets, not a
+comparator. Everything about *what a battler is* and *when it
 structurally gets a turn* is your mod's own responsibility to build;
 everything about *what actually happens once it's decided to act* is
 already ours, and stays ours through this one, minimal seam.
+
+**Done, by `g9-Battle-Scene` (2026-08-27/28):** the battler slots
+(`self.enemyBattlers`/`self.playerBattlers`), the turn-resolution loop
+(`combat.lua`'s `Combat.resolveTurn`, driven from its own menu input), and
+the `"g9.request_adjacency"` wrap (`battle_screen.lua`, answered straight
+from that same real roster) — real singles/doubles/triples/boss-fight
+combat, not a stub. **Not done anywhere yet**: a real, N-way
+`Battle:sideOf` override (the gap named above) — nothing currently
+corrects a non-primary battler's event `side` tag, so anything in
+`g9-battle-engine-beta` that reads `battle.player`/`battle.enemy`
+directly instead of the caster/target it was actually handed (a real risk
+for code added without this multi-battler context in mind — audit before
+assuming any given ability/status file generalizes correctly to battler
+#2 or #3) may misclassify or silently no-op for one.

@@ -64,47 +64,23 @@ return function(mod)
   assert(changeStage and normalize and displayNameFor,
     "modern_movepool_status: combat/modern_combat.lua must load first")
 
-  ------------------------------------------------------------------
-  -- Burn / paralyze / poison, secondary chance on a damaging move.
-  -- chance255 follows the same engine roll convention modern_movepool_
-  -- stages.lua established (rng(0,255) < N/256): 10% -> 26, 30% -> 77,
-  -- nil -> unconditional (guaranteed on a landed hit, e.g. Inferno/Nuzzle).
-  -- Id suffix is the real percent (matches the pre-existing GALAR_FLINCH_
-  -- EFFECT_30/GALAR_CONFUSE_EFFECT_20 naming), not the raw 0-255 number.
-  ------------------------------------------------------------------
-  local function secondaryStatus(effectId, status, chance255)
-    mod.content.move_effects:register(effectId, {
-      kind = "secondary",
-      run = function(a, b, c)
-        local n = normalize(a, b, c)
-        if n.gen2 then return {} end
-        if chance255 and n.battle.rng(0, 255) >= chance255 then return {} end
-        -- reached only on Gen 1 (n.gen2 already returned above), so `a`
-        -- is EffectRegistry's own ctx facade here, carrying `.move`
-        -- (normalize() drops it -- it only keeps battle/user/target/gen2)
-        local move = a.move
-        return StatusRegistry.inflict(n.battle, n.target, status, {
-          moveType = move and move.type, secondary = true, source = move and move.id,
-        })
-      end,
-    })
-  end
-
-  -- Flame Wheel, Pyro Ball: 10% burn
-  secondaryStatus("GALAR_BURN_EFFECT_10", "BRN", 26)
-  -- Inferno: 100% burn on a landed hit (its low 50 accuracy is the real
-  -- Showdown trade-off, not this file's business to touch)
-  secondaryStatus("GALAR_BURN_EFFECT_100", "BRN", nil)
-
-  -- Discharge, Dragon Breath, Spark: 30% paralyze
-  secondaryStatus("GALAR_PARALYZE_EFFECT_30", "PAR", 77)
-  -- Nuzzle: 100% paralyze on a landed hit
-  secondaryStatus("GALAR_PARALYZE_EFFECT_100", "PAR", nil)
-
-  -- Cross Poison, Poison Tail: 10% poison
-  secondaryStatus("GALAR_POISON_EFFECT_10", "PSN", 26)
-  -- Gunk Shot, Poison Jab, Sludge Bomb: 30% poison
-  secondaryStatus("GALAR_POISON_EFFECT_30", "PSN", 77)
+  -- RETIRED (2026-08-27): a `secondaryStatus` helper used to live here,
+  -- registering GALAR_BURN_EFFECT_10/100, GALAR_PARALYZE_EFFECT_30/100,
+  -- GALAR_POISON_EFFECT_10/30 -- six per-move, per-CHANCE handlers with
+  -- the real percentage hardcoded directly into the identifier itself
+  -- (the exact "acting as a data owner" pattern this project's own
+  -- standing rule forbids -- national_dex already owns `ailment`/
+  -- `ailmentChance` for every one of these moves). Confirmed by direct
+  -- grep, all six were registered but never actually patched onto any
+  -- move id anywhere -- dead code, not a live mechanic being replaced.
+  -- Superseded by main.lua's own installMovepoolEffects, which reads
+  -- ailment/ailmentChance live for the ENTIRE roster generically
+  -- (Flame Wheel/Pyro Ball/Inferno/Discharge/Dragon Breath/Spark/
+  -- Nuzzle/Cross Poison/Poison Tail/Gunk Shot/Poison Jab/Sludge Bomb
+  -- included, not just the subset this dead code named) -- also fixes
+  -- a real gap this code had regardless of the dead-patch issue: its own
+  -- `if n.gen2 then return {} end` made it deliberately Gen 2-inert even
+  -- if it HAD been wired.
 
   ------------------------------------------------------------------
   -- Flatter / Swagger: raise a TARGET stat AND confuse the target, both
@@ -137,6 +113,14 @@ return function(mod)
     -- boss_fight_status.lua's own header for the full reasoning).
     if target == n.battle.enemy and mod.exports.bossFightHas
         and mod.exports.bossFightHas(n.battle, "softStatus") then
+      return nil
+    end
+    -- Phase 3a (abilities/engine/status_immunity.lua): OWNTEMPO. Gated
+    -- here directly, same reasoning as the boss-fight check just above --
+    -- Flatter/Swagger are power=0 status moves, battle.damage_dealt
+    -- never fires for them at all.
+    if mod.exports.hasStatusImmunity
+        and mod.exports.hasStatusImmunity(target, "confusion", n.battle) then
       return nil
     end
     target.confusedTurns = n.battle.rng(2, 5)

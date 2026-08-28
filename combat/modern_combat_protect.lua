@@ -254,6 +254,27 @@ return function(mod)
     end
 
     if target.protected then
+      -- Unseen Fist / Piercing Drill (Phase 8, other bucket): both real,
+      -- confirmed CONTACT-move-specific bypasses of an incoming Protect
+      -- (checked against the ATTACKER's own ability, the real direction
+      -- -- neither is about the defender). Unseen Fist: full damage,
+      -- same as a Max move ignoring a plain Protect entirely never
+      -- applies here since Unseen Fist isn't scaled at all. Piercing
+      -- Drill: real text is explicit about a 1/4-damage bypass -- reuses
+      -- the exact same 25% scale-down/rounding the Max-move branch just
+      -- below already established, rather than a second rounding rule.
+      local abilityIdOf = mod.exports.abilityIdOf
+      local makesContact = mod.exports.makesContact
+      local userAbility = abilityIdOf and ctx.user and abilityIdOf(ctx.user)
+      local contact = makesContact and ctx.move and makesContact(ctx.move.id, ctx.user)
+      if contact and userAbility == "UNSEENFIST" then
+        return next(ctx)
+      end
+      if contact and userAbility == "PIERCINGDRILL" then
+        local dmg, info = next(ctx)
+        dmg = math.floor((dmg or 0) * 0.25 + 0.5)
+        return dmg, info
+      end
       if isMaxMove(ctx.move) then
         local dmg, info = next(ctx)
         dmg = math.floor((dmg or 0) * 0.25 + 0.5)

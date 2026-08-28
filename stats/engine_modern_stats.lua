@@ -425,8 +425,16 @@ end
 function ModernStats.ensure(speciesDef, mon)
   if type(mon) ~= "table" then return mon end
 
-  local needIvs = type(mon.ivs) ~= "table"
-  local needEvs = type(mon.evs) ~= "table"
+  -- Not just "is this a table" -- a mon can already carry a partially
+  -- filled ivs/evs table (e.g. hp/atk/def/spe set by some earlier Gen 1
+  -- path) with spa/spd still missing, which used to skip this whole
+  -- block and leave mon.ivs.spa/mon.ivs.spd nil going into the
+  -- calcModernStat calls below (real crash: "attempt to perform
+  -- arithmetic on local 'iv' (a nil value)"). The fill loop's own body
+  -- already guards each key with its own nil check, so it's safe to
+  -- re-enter it whenever spa/spd specifically are still unset.
+  local needIvs = type(mon.ivs) ~= "table" or mon.ivs.spa == nil or mon.ivs.spd == nil
+  local needEvs = type(mon.evs) ~= "table" or mon.evs.spa == nil or mon.evs.spd == nil
   if needIvs or needEvs then
     local dvs = mon.dvs or {}
     local statExp = mon.statExp or {}
@@ -466,10 +474,10 @@ function ModernStats.ensure(speciesDef, mon)
     local baseSpd = b.spDefense or b.specialDefense or b.special
     local level = mon.level or 1
     if mon.stats.spa == nil then
-      mon.stats.spa = calcModernStat(baseSpa, mon.ivs.spa, mon.evs.spa, level, mon.nature, "spa")
+      mon.stats.spa = calcModernStat(baseSpa, mon.ivs.spa or 0, mon.evs.spa or 0, level, mon.nature, "spa")
     end
     if mon.stats.spd == nil then
-      mon.stats.spd = calcModernStat(baseSpd, mon.ivs.spd, mon.evs.spd, level, mon.nature, "spd")
+      mon.stats.spd = calcModernStat(baseSpd, mon.ivs.spd or 0, mon.evs.spd or 0, level, mon.nature, "spd")
     end
   end
 
