@@ -84,6 +84,10 @@ return function(mod)
   local Battle = require("src.battle.gen2.Battle")
   local bossFightHas = mod.exports.bossFightHas
   assert(bossFightHas, "boss_fight_status: combat/boss_fight.lua must load first")
+  local nationalDex = mod.find and mod.find("national_dex")
+  assert(nationalDex and nationalDex.exports and nationalDex.exports.moveById,
+    "boss_fight_status: national_dex must be loaded first")
+  local moveById = nationalDex.exports.moveById
 
   ------------------------------------------------------------------
   -- hardStatus
@@ -132,20 +136,15 @@ return function(mod)
   end, -100)
 
   ------------------------------------------------------------------
-  -- antiDrain
+  -- antiDrain -- keyed off the move's own real, live `drain` field
+  -- (national_dex), not a hardcoded effect-id table (migrated
+  -- 2026-08-27 -- the id-table version stopped covering Draining Kiss
+  -- the moment GALAR_DRAIN_EFFECT_75 was retired as dead/Gen-2-broken
+  -- code, main.lua's own installGenericDrainRecoil work; reading the
+  -- field directly means this covers every real drain move generically,
+  -- natively-modeled ones included, not just whichever ids a list
+  -- happened to name).
   ------------------------------------------------------------------
-  -- Effect ids confirmed (direct source read) to be every drain-heal
-  -- path in this engine, native and mod-custom alike, each mapped to its
-  -- own real fraction -- DRAIN_HP_EFFECT/EFFECT_LEECH_HIT/EFFECT_
-  -- DREAM_EATER are native Gen1/Gen2 half-heal; GALAR_DRAIN_EFFECT_75 is
-  -- this mod's own Draining Kiss handler (Gen1-only, per that file's own
-  -- header -- afterDamage never runs on Gen2).
-  local DRAIN_FRACTION = {
-    DRAIN_HP_EFFECT = 1 / 2,
-    EFFECT_LEECH_HIT = 1 / 2,
-    EFFECT_DREAM_EATER = 1 / 2,
-    GALAR_DRAIN_EFFECT_75 = 3 / 4,
-  }
   mod.events:on("battle.damage_dealt", function(ev)
     local battle = ev and ev.battle
     local target = ev and ev.target
@@ -154,9 +153,10 @@ return function(mod)
     local dealt = ev and ev.damage
     if not (battle and target and user and move and dealt and dealt > 0) then return end
     if target ~= battle.enemy or not bossFightHas(battle, "antiDrain") then return end
-    local fraction = DRAIN_FRACTION[move.effect]
-    if not fraction then return end
-    local harm = math.max(1, math.floor(dealt * fraction))
+    local ok, info = pcall(moveById, move.id)
+    local drainPercent = ok and info and (info.drain or 0) > 0 and info.drain or nil
+    if not drainPercent then return end
+    local harm = math.max(1, math.floor(dealt * drainPercent / 100))
     local userMon = user.mon or user
     userMon.hp = math.max(0, (userMon.hp or 0) - harm)
     battle:emit({ kind = "message",

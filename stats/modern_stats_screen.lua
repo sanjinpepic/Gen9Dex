@@ -111,6 +111,17 @@ return function(mod)
     local def = game.data.pokemon[mon.species]
     Stats.ensure(def, mon)
     ModernStats.ensure(def, mon)
+    -- Ability/nature generation is otherwise only wired to battle.started
+    -- (gen2_modern_stats.lua/wild_modern_ivs.lua/trainer_modern_stats.lua),
+    -- so a mon viewed here before its first battle (a starter, a gift, a
+    -- trade) would still show a nil ability/nature. Both generate
+    -- functions are idempotent -- only fill a genuinely missing value,
+    -- never re-roll one a mon already has -- so calling them here on
+    -- every open is the same safe "derive on demand" contract this file
+    -- already uses for ivs/evs/stats.
+    local nd = mod.find and mod.find("national_dex")
+    ModernStats.generateAbility(mon, ModernStats.resolveAbilities(mon.species, nd and nd.exports))
+    ModernStats.generateNature(mon)
     local self = setmetatable({ game = game, mon = mon, page = 1 }, Screen)
     local path = Sprites.path(game.data, mon.species, "front", {
       mon = mon, kind = "summary"
@@ -253,7 +264,12 @@ return function(mod)
     Font.drawBox(0, 7, 14, 11)
     drawLabelValue("ITEM", mon.item, 8, 48, 72, 56)
     drawLabelValue("TERA", mon.teraType, 8, 48, 96, 56)
-    drawLabelValue("DMAX", mon.dynamaxLevel and tostring(mon.dynamaxLevel) or NONE,
+    -- Dynamax Level is per-save, not per-mon (dynamax_state.lua's own
+    -- storage contract) -- mon.dynamaxLevel never actually exists as a
+    -- field, so reading it directly always drew NONE. Same value for
+    -- every mon, read through the real accessor.
+    local dmaxLevel = mod.exports.getDynamaxLevel and mod.exports.getDynamaxLevel()
+    drawLabelValue("DMAX", dmaxLevel and tostring(dmaxLevel) or NONE,
       8, 48, 120, 56)
 
     -- Right panel: four moves.  Name / category / PP have explicit columns;

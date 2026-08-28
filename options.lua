@@ -84,4 +84,12 @@ return {
     choices = { { "ON", "true" }, { "OFF", "false" } },
     description = "ON: Gigantamax's size-up and size-down happen instantly (0 seconds, no staged ramp/pause) instead of the eased multi-stage animation. OFF (default): the full animated sequence plays.",
   },
+  {
+    key = "dev_tools",
+    label = "DEV TOOLS",
+    type = "choice",
+    default = "false",
+    choices = { { "ON", "true" }, { "OFF", "false" } },
+    description = "ON: adds a DEVSTATS entry to the party submenu (selected Pokemon) showing its ability/nature/Tera type/Dynamax level/Gigantamax Factor, real combat stats, and full EV/IV distribution across 3 pages. OFF (default): party submenu is unchanged.",
+  },
 }

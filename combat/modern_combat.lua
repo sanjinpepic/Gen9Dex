@@ -40,6 +40,22 @@ return function(mod)
     return Gen2Battle ~= nil and battle ~= nil and getmetatable(battle) == Gen2Battle
   end
 
+  -- Gen 1 detection, same identity-check shape as isGen2Battle above --
+  -- deliberately its OWN positive check against Gen 1's real class, never
+  -- derived as "not gen2" anywhere in this mod. The comment right below
+  -- this block (monLooksGen2, a real bug found via Max Guard) already
+  -- proved why: ctx.battle's own identity can fail to match even during
+  -- a genuine battle of that generation, so "not gen2 therefore gen1" can
+  -- be actively wrong, not just unconfirmed, in the exact cases where a
+  -- caller hands this mod an unreliable ctx.battle. Two independent
+  -- positive checks close that gap; a negation of one never can.
+  local gen1Ok, BattleState = pcall(require, "src.battle.BattleState")
+  BattleState = gen1Ok and BattleState or nil
+  local function isGen1Battle(battle)
+    return BattleState ~= nil and battle ~= nil and getmetatable(battle) == BattleState
+  end
+  mod.exports.isGen1Battle = isGen1Battle
+
   -- Confirmed live (2026-08-20, Max Guard): ctx.battle isn't always the
   -- real, metatable-matching Gen 2 Battle instance every battle.damage
   -- hook call gets -- whatever battle_forms's own Max Guard block-check
@@ -118,6 +134,31 @@ return function(mod)
   end
   mod.exports.registerDamageModifier = registerDamageModifier
 
+  -- Companion chain to registerDamageModifier, for the class of ability
+  -- registerDamageModifier structurally can't express: Phase 2's own
+  -- effectiveness-tier abilities (Neuroforce/Tinted Lens/Filter/Solid
+  -- Rock/Prism Armor -- "1.25x when super effective," "2x when not very
+  -- effective," etc.) need the REAL, final type multiplier to check
+  -- against, and every registerDamageModifier entry runs BEFORE that
+  -- multiplier exists at all (same root problem Delta Stream's own
+  -- effectivenessOverrideFor hook was built for in Phase 1.5, just
+  -- "add a factor" shaped instead of "replace the multiplier" shaped).
+  -- Consulted once, right after Delta Stream's own override and Tera
+  -- Stellar's own extra multiplier have both already applied -- so these
+  -- abilities react to the REAL, final effectiveness the hit will
+  -- register as, not a pre-Delta-Stream/pre-Stellar value.
+  local postEffectivenessModifiers = {}
+  local function registerPostEffectivenessModifier(id, priority, fn)
+    assert(type(id) == "string" and id ~= "", "post-effectiveness modifier id is required")
+    assert(type(fn) == "function", "post-effectiveness modifier must be a function")
+    for i, entry in ipairs(postEffectivenessModifiers) do
+      if entry.id == id then table.remove(postEffectivenessModifiers, i) break end
+    end
+    table.insert(postEffectivenessModifiers, { id = id, priority = priority or 0, fn = fn })
+    table.sort(postEffectivenessModifiers, function(a, b) return a.priority > b.priority end)
+  end
+  mod.exports.registerPostEffectivenessModifier = registerPostEffectivenessModifier
+
   -- Part B Phase 5 Tier 1: real per-move variable base power (Heat Crash/
   -- Heavy Slam's weight ratio, Power Trip's stat-stage count, Flail's HP
   -- fraction). Deliberately separate from registerDamageModifier above --
@@ -164,10 +205,43 @@ return function(mod)
     if mod.exports.isTerastallized and mod.exports.isTerastallized(ctx.battle, ctx.user, ctx.gen2) then
       return 1.0
     end
+    -- Adaptability (abilities/engine/damage_multiplier.lua's own
+    -- "adaptability_stab" entry, same priority tier) replaces the usual
+    -- 1.5x with 2.0x -- deferred to explicitly here (checking the
+    -- ability directly) rather than relying on registration/sort order
+    -- between two same-priority entries, exactly the plan this file's
+    -- own header already documented before either entry existed.
+    if mod.exports.abilityIdOf and mod.exports.abilityIdOf(ctx.user) == "ADAPTABILITY" then
+      return 1.0
+    end
     for _, t in ipairs(curTypesOf(ctx.user, ctx.gen2)) do
       if t == ctx.move.type then return 1.5 end
     end
     return 1.0
+  end)
+
+  -- Real Gen 9 spread-move rule (the TODO this file's own header already
+  -- flagged): a move hitting more than one target the same turn deals
+  -- 0.75x to each, versus full damage against a single target. Reads
+  -- ctx.opts.targetCount -- a NEW, purely additive field on the SAME
+  -- opts table computeModernDamage already threads through, populated by
+  -- whatever calls useMove with more than one real target resolved (see
+  -- combat/move_targeting.lua's own resolveMoveTargets, and combat/
+  -- MULTI_BATTLE_HOOKS.md's own updated contract) -- absent or 1 on
+  -- every call site today, so this is a genuine no-op until a real
+  -- multi-battler caller exists, not a behavior change for anything
+  -- currently working. Boss-fight exception, explicit user rule: AoE
+  -- diminishing is removed entirely against a protected boss regardless
+  -- of which boss-fight flags are active -- Life Dew and Earthquake hit
+  -- everyone at full force, not 0.75x each.
+  registerDamageModifier("spread_reduction", 95, function(ctx)
+    local count = ctx.opts and ctx.opts.targetCount
+    if not (count and count > 1) then return 1.0 end
+    if ctx.target == ctx.battle.enemy and mod.exports.bossFightHas
+        and next(ctx.battle.bossFightFlags or {}) ~= nil then
+      return 1.0
+    end
+    return 0.75
   end)
 
   ------------------------------------------------------------------
@@ -677,9 +751,53 @@ return function(mod)
       and mod.exports.bossFightHas ~= nil and mod.exports.bossFightHas(battle, "statsDrop")
   end
 
+  -- Phase 7 (prevent bucket): the real "can't have THIS stat lowered by
+  -- an opponent" family -- Clear Body/Full Metal Body/White Smoke (every
+  -- stat), Hyper Cutter (Attack only), Big Pecks (Defense only), Keen
+  -- Eye/Mind's Eye (accuracy only), Flower Veil (every stat, but only a
+  -- Grass-type holder -- real Flower Veil protects Grass-type ALLIES, not
+  -- unconditionally; this engine has no separate ally slot in a 1v1
+  -- battle, so "is the holder itself Grass-type" is the one real case
+  -- reachable today, same honest reduction Sweet Veil's own self+allies
+  -- scope already used in Phase 3). Exported so the two OTHER real call
+  -- sites this same rule has to cover (Gen 2's native speed/accuracy/
+  -- evasion path in abilities/engine/stage_change_transform.lua, Gen 1's
+  -- own NATIVE_STATS branch in main.lua -- neither of which routes
+  -- through this function at all) share one definition instead of three
+  -- copies that could drift. Self-inflicted drops (Overheat/Close Combat/
+  -- Superpower against oneself, a stat-lowering ability triggering on its
+  -- own holder) are NEVER blocked by this family in the real games -- only
+  -- checked when `fromEnemy` is true, matching this file's own existing
+  -- Mist/Substitute check immediately below.
+  local ALL_STATS_IMMUNE = { CLEARBODY = true, FULLMETALBODY = true, WHITESMOKE = true }
+  local SINGLE_STAT_IMMUNE = {
+    HYPERCUTTER = "attack", BIGPECKS = "defense",
+    KEENEYE = "accuracy", MINDSEYE = "accuracy",
+  }
+  local function statDropBlockedByAbility(who, gen2, stat)
+    local abilityIdOf = mod.exports.abilityIdOf
+    local id = who and abilityIdOf and abilityIdOf(who)
+    if not id then return false end
+    if ALL_STATS_IMMUNE[id] then return true end
+    if SINGLE_STAT_IMMUNE[id] == stat then return true end
+    if id == "FLOWERVEIL" then
+      local curTypesOf = mod.exports.curTypesOf
+      if curTypesOf then
+        for _, t in ipairs(curTypesOf(who, gen2)) do
+          if t == "GRASS" then return true end
+        end
+      end
+    end
+    return false
+  end
+  mod.exports.statDropBlockedByAbility = statDropBlockedByAbility
+
   local function changeStage(battle, who, stat, delta, fromEnemy, gen2)
     if mod.exports.bossStatsDropBlocked(battle, who, delta) then
       return { romText(battle.data, "_NothingHappenedText", "Nothing happened!") }
+    end
+    if fromEnemy and delta < 0 and statDropBlockedByAbility(who, gen2, stat) then
+      return { Strings("%s's stats\nwon't go lower!", displayNameFor(battle, who, gen2)) }
     end
     local protectedBySub, mist = isProtectedFrom(battle, who, gen2)
     if fromEnemy and (protectedBySub or mist) then
@@ -688,6 +806,19 @@ return function(mod)
       end
       return { romText(battle.data, "_ButItFailedText", "But, it failed!") }
     end
+    -- Phase 8 (Contrary/Simple): applied AFTER the boss-protection and
+    -- Mist/Substitute checks above, which reason about the RAW,
+    -- originally-intended sign -- a boss's statsDrop immunity, or Mist
+    -- blocking a hostile decrease, must not be defeated just because the
+    -- holder also has Contrary -- but BEFORE the stage math and the
+    -- outcome message below, so both correctly reflect what actually
+    -- happens (Contrary's "fell"->"rose" flip, Simple's doubled
+    -- magnitude). Looked up lazily (abilities/ability_dispatch.lua may
+    -- load after this file within the same session but always before any
+    -- real battle runs).
+    local id = mod.exports.abilityIdOf and mod.exports.abilityIdOf(who)
+    if id == "CONTRARY" then delta = -delta
+    elseif id == "SIMPLE" then delta = delta * 2 end
     local stages = stagesFor(battle, sideOfWho(battle, who, gen2))
     local cur = stages[stat] or 0
     local new = math.max(-6, math.min(6, cur + delta))
@@ -855,7 +986,17 @@ return function(mod)
     return stage
   end
 
+  -- Phase 7 (prevent bucket): Battle Armor/Shell Armor -- real modern
+  -- Showdown behavior is an outright ban on landing a crit against the
+  -- holder, not merely capping the stage at 0 (stage 0 is still 1/24, not
+  -- zero) -- checked here, before the stage/denom lookup even runs, so a
+  -- stage-3+ "always crits" guarantee (Merciless, a high-crit move plus
+  -- Focus Energy) is correctly overridden too.
+  local CRIT_IMMUNE_ABILITY = { BATTLEARMOR = true, SHELLARMOR = true }
   local function modernCritRoll(ctx)
+    local abilityIdOf = mod.exports.abilityIdOf
+    local id = ctx.target and abilityIdOf and abilityIdOf(ctx.target)
+    if id and CRIT_IMMUNE_ABILITY[id] then return false end
     local denom = CRIT_STAGE_DENOM[modernCritStage(ctx)]
     return ctx.rng(1, denom) == 1
   end
@@ -1023,7 +1164,7 @@ return function(mod)
         local m = entry.fn({
           battle = ctx.battle, user = user, target = target, move = move,
           category = category, atkStat = atkStat, defStat = defStat, crit = crit,
-          gen2 = gen2,
+          gen2 = gen2, opts = opts,
         }) or 1.0
         if m ~= 1.0 then
           d = math.floor(d * m)
@@ -1077,6 +1218,17 @@ return function(mod)
           d = math.floor(d * extra)
           mult = math.floor(mult * extra)
         end
+      end
+      -- Phase 2's own effectiveness-tier abilities -- see
+      -- registerPostEffectivenessModifier's own header just above its
+      -- definition for why this can't live in the ordinary
+      -- registerDamageModifier chain.
+      for _, entry in ipairs(postEffectivenessModifiers) do
+        local m = entry.fn({
+          battle = ctx.battle, user = user, target = target, move = move,
+          category = category, mult = mult, gen2 = gen2,
+        }) or 1.0
+        if m ~= 1.0 then d = math.floor(d * m) end
       end
     end
 

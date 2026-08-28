@@ -53,8 +53,9 @@ return function(mod, data)
   local bossStatsDropBlocked = mod.exports.bossStatsDropBlocked
   local abilityIdOf = mod.exports.abilityIdOf
   local abilityBehaviorOf = mod.exports.abilityBehaviorOf
-  assert(changeStage and bossStatsDropBlocked and abilityIdOf and abilityBehaviorOf,
-    "switchin_stat_change: modern_combat.lua and ability_dispatch.lua must load first")
+  local requestAdjacency = mod.exports.requestAdjacency
+  assert(changeStage and bossStatsDropBlocked and abilityIdOf and abilityBehaviorOf and requestAdjacency,
+    "switchin_stat_change: modern_combat.lua and move_targeting.lua must load first")
 
   local STAT_KEY = {
     attack = "attack", defense = "defense",
@@ -63,22 +64,10 @@ return function(mod, data)
   }
   local NATIVE_STATS = { speed = true, accuracy = true, evasion = true }
 
-  local function opponentOf(battle, mon)
-    return (mon == battle.player) and battle.enemy or battle.player
-  end
-
-  local function applySwitchInAbility(battle, mon)
-    if not (battle and mon and (mon.hp or 0) > 0) then return end
-    local id = abilityIdOf(mon)
-    if not (id and data[id]) then return end
-    local record = abilityBehaviorOf(mon)
-    local behavior = record and record.behaviour
-    local effect = behavior and behavior.effects and behavior.effects[1]
-    if not (effect and effect.kind == "stat_change" and effect.stat and effect.stages) then return end
-    local stat = STAT_KEY[effect.stat]
-    if not stat then return end
-    local fromEnemy = behavior.scope == "foes"
-    local target = fromEnemy and opponentOf(battle, mon) or mon
+  -- Applies one already-resolved (mon, target, stat, stages) change --
+  -- the per-target body every foes-scope target in the loop below and
+  -- the single self-target case both reduce to.
+  local function applyToOneTarget(battle, mon, target, stat, effect, fromEnemy)
     if not target or (target.hp or 0) <= 0 then return end
     -- changeStageAgainstMist has no Substitute check of its own (see this
     -- file's own header) -- applied here so a hostile native-store change
@@ -95,6 +84,41 @@ return function(mod, data)
       battle:changeStageAgainstMist(mon, target, stat, effect.stages)
     else
       changeStage(battle, target, stat, effect.stages, fromEnemy, true)
+    end
+  end
+
+  local function applySwitchInAbility(battle, mon)
+    if not (battle and mon and (mon.hp or 0) > 0) then return end
+    local id = abilityIdOf(mon)
+    if not (id and data[id]) then return end
+    local record = abilityBehaviorOf(mon)
+    local behavior = record and record.behaviour
+    local effect = behavior and behavior.effects and behavior.effects[1]
+    if not (effect and effect.kind == "stat_change" and effect.stat and effect.stages) then return end
+    local stat = STAT_KEY[effect.stat]
+    if not stat then return end
+    local fromEnemy = behavior.scope == "foes"
+
+    if not fromEnemy then
+      applyToOneTarget(battle, mon, mon, stat, effect, false)
+      return
+    end
+
+    -- Real Intimidate/Intrepid Sword/Dauntless Shield rule: every
+    -- ADJACENT opponent, not "the" opponent -- a hard-binary opponentOf
+    -- lookup was exactly the class of gap MULTI_BATTLE_HOOKS.md's own
+    -- sideOf section warns about (correct only for today's 2-battler
+    -- case, silently wrong the moment a real multi-battler format
+    -- exists). Reuses the SAME "g9.request_adjacency" hook a spread MOVE
+    -- uses -- moveId is nil here since nothing about the trigger is a
+    -- move-use, and a wrapped handler never inspects it anyway. Falls
+    -- through to move_targeting.lua's own native-fallback adjacency (the
+    -- other of battle.player/battle.enemy) when no battle-scene mod has
+    -- wrapped the hook, so this is exactly equivalent to the old
+    -- opponentOf lookup for every format this engine runs today.
+    local adjacency = requestAdjacency(battle, mon, nil)
+    for _, target in ipairs(adjacency.enemies) do
+      applyToOneTarget(battle, mon, target, stat, effect, true)
     end
   end
 

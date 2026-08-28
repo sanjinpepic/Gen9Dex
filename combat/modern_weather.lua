@@ -204,6 +204,20 @@ return function(mod)
     charge = { anim = "XSTATITEM_ANIM", enemyAnim = "XSTATITEM_DUPLICATE_ANIM" },
   })
 
+  -- Gen 2 charge turn, closed 2026-08-27 (this file's own header above
+  -- used to document this as a real, accepted gap -- "Gen 2 Solar Beam
+  -- remains uncharged"): Effects.CHARGE is a plain, mutable Lua table
+  -- Gen 2's own native move-execution gate already reads generically by
+  -- effect id (confirmed real, gen2/Battle.lua), the exact same
+  -- primitive this session's Bounce fix (combat/modern_movepool_damage
+  -- .lua) already proved safe for a damaging move -- adding a key here
+  -- carries none of the move-id schema-validation risk a native id
+  -- string would. The real sun-skip optimization stays Gen 1-only
+  -- (SUN_SKIPS_CHARGE above) -- Gen 2 Solar Beam now genuinely charges
+  -- for 2 turns even in sun, a real, smaller, separately-flagged gap,
+  -- not silently dropped.
+  require("src.battle.gen2.Effects").CHARGE.GALAR_SOLARBEAM_EFFECT = { text = "%s took in sunlight!" }
+
   ------------------------------------------------------------------
   -- Solar Beam's real Sun skip-the-charge-turn. No sanctioned hook
   -- exists for this (checked: BattleState:performMove's charge branch,
@@ -312,11 +326,34 @@ return function(mod)
       return
     end
     if weather ~= "SAND" then return end
+    -- Phase 8 (abilities/engine/damage_immunity.lua): SANDFORCE/
+    -- SANDRUSH/SANDVEIL/MAGICGUARD all block this same chip -- real,
+    -- ability-level immunity, on top of the pre-existing type-based one
+    -- above. Looked up lazily (abilities/ability_dispatch.lua always
+    -- loads before this closure ever runs, during a real battle, but
+    -- this file's own install order relative to it isn't asserted on).
+    -- OVERCOAT (Phase 7, prevent bucket) added 2026-08-27: its real,
+    -- current-Showdown effect is "immune to weather chip damage" in
+    -- general (its own national_dex text still says "sandstorm, hail,
+    -- etc.", a legacy PokeAPI description) -- Sand is the ONLY weather
+    -- this engine actually chips for (this mod's own weather roster is
+    -- Snow, not Hail, and real modern Snow deals no residual damage at
+    -- all, matching this engine's own already-correct behavior), so
+    -- Overcoat's real effect here reduces exactly to this one table.
+    local SAND_CHIP_IMMUNE_ABILITY = {
+      SANDFORCE = true, SANDRUSH = true, SANDVEIL = true, MAGICGUARD = true,
+      OVERCOAT = true,
+    }
     for _, who in ipairs({ battle.player, battle.enemy }) do
       if who and who.mon and who.mon.hp > 0 and not who.invulnerable then
         local immune = false
         for _, t in ipairs(curTypesOf(who, false)) do
           if SAND_IMMUNE[t] then immune = true; break end
+        end
+        if not immune then
+          local abilityIdOf = mod.exports.abilityIdOf
+          local id = abilityIdOf and abilityIdOf(who)
+          if id and SAND_CHIP_IMMUNE_ABILITY[id] then immune = true end
         end
         if not immune then
           local dmg = math.max(1, math.floor(who.mon.stats.hp / 16))

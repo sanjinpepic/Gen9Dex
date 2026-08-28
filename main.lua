@@ -157,13 +157,83 @@ local function installMovepoolEffects(mod)
     local battle = ev and ev.battle
     local moveId = ev and ((ev.move and ev.move.id) or ev.moveId)
     local target = ev and ev.target
+    local user = ev and ev.user
+    local damage = ev and ev.damage
     if not (battle and moveId and target) then return end
     local ok, info = pcall(moveById, moveId)
     if not (ok and info) then return end
     local flinchChance = (info.flinchChance or 0) > 0 and info.flinchChance or nil
     local confuseChance = (info.ailment == "confusion" and (info.ailmentChance or 0) > 0)
       and info.ailmentChance or nil
-    if not (flinchChance or confuseChance) then return end
+    -- Generic secondary status (poison/burn/paralysis/freeze/sleep) --
+    -- confusion is handled separately above (a volatile, not a major
+    -- status). Always opponent-directed: no real move self-inflicts a
+    -- status via its own secondary chance. STANDARD_AILMENT maps
+    -- national_dex's own canonical spelling to each engine's real,
+    -- confirmed status-string convention (see this mod's own
+    -- NATIONAL_DEX_API_REFERENCE.md -- Gen 1 codes vs Gen 2 words,
+    -- neither matching national_dex's own spelling directly).
+    -- toxic (badly poisoned) is its own real status, not "poison" --
+    -- Gen 1's StatusRegistry.inflict takes it via opts.toxic=true on the
+    -- SAME "PSN" code (confirmed real, src/battle/Status.lua's own PSN
+    -- record: `if opts.toxic then target.toxicCounter = 1 ... end`);
+    -- Gen 2 has a genuinely separate status word for it ("toxic", not
+    -- "poison" -- confirmed real, gen2/Battle.lua's own Battle.STATUSES
+    -- .toxic). isToxic below threads that through.
+    local STANDARD_AILMENT = {
+      poison = { gen1 = "PSN", gen2 = "poison" }, burn = { gen1 = "BRN", gen2 = "burn" },
+      paralysis = { gen1 = "PAR", gen2 = "paralyze" }, freeze = { gen1 = "FRZ", gen2 = "freeze" },
+      sleep = { gen1 = "SLP", gen2 = "sleep" },
+      toxic = { gen1 = "PSN", gen2 = "toxic", isToxic = true },
+    }
+    -- TOXIC's own real move record carries ailment="poison" (confirmed
+    -- via direct national_dex dump), not "toxic" -- a real, confirmed
+    -- data inconsistency against Malignant Chain's own correctly-tagged
+    -- "toxic" ailment for the identical real mechanic -- so this one
+    -- move id needs an explicit override rather than trusting the
+    -- ailment field alone. Every other move's own real ailment value is
+    -- still read live, unconditionally.
+    local ailmentKey = (moveId == "TOXIC") and "toxic" or info.ailment
+    local ailmentCodes = STANDARD_AILMENT[ailmentKey]
+    local ailmentChance = (ailmentCodes and (info.ailmentChance or 0) > 0) and info.ailmentChance
+      or (ailmentCodes and moveId == "TOXIC" and 100) or nil
+    -- Generic secondary stat change. Direction (self vs opponent) has no
+    -- structured field at all in national_dex's own data -- a real,
+    -- confirmed PokeAPI limitation, not something this mod failed to
+    -- read -- but the prose `shortEffect` text reliably says "the
+    -- user's"/"the target's" (verified against Overheat/Superpower/
+    -- Close Combat/Fleur Cannon/V-create -- self -- vs Acid/Mud Shot --
+    -- opponent -- before writing this), so direction is still read live,
+    -- not hardcoded per move.
+    local STAT_KEY = { attack = "attack", defense = "defense",
+      ["special-attack"] = "spa", ["special-defense"] = "spd",
+      speed = "speed", accuracy = "accuracy", evasion = "evasion" }
+    local statChance = ((info.statChance or 0) > 0 and #(info.statChanges or {}) > 0)
+      and info.statChance or nil
+    -- national_dex's own prose text uses a curly apostrophe (U+2019),
+    -- not a straight one -- confirmed by direct dump, not assumed --
+    -- checked for both defensively in case a future shard mixes them.
+    local function saysUsers(text)
+      return text:find("user's") ~= nil or text:find("user\226\128\153s") ~= nil
+    end
+    local function saysTargets(text)
+      return text:find("target's") ~= nil or text:find("target\226\128\153s") ~= nil
+    end
+    local shortEffect = info.shortEffect or ""
+    local statSelfDirected = statChance and saysUsers(shortEffect) and not saysTargets(shortEffect)
+    -- Generic drain/recoil -- positive `drain` heals the user a fraction
+    -- of the damage just dealt, negative is recoil (self-damage). Gated
+    -- on this gen's own real modeled flag (gen1EffectModeled/
+    -- gen2EffectModeled): when true, this move's real behavior already
+    -- runs natively for THIS gen (Absorb/Mega Drain/Giga Drain/Leech
+    -- Life/Dream Eater's own drain included) -- applying again here
+    -- would double it. When false, nothing else handles it for this gen
+    -- (confirmed: no remaining mod-patched drain/recoil effect exists
+    -- anywhere in this codebase as of this migration -- the two that
+    -- used to, GALAR_RECOIL_EFFECT_3/2 and GALAR_DRAIN_EFFECT_75, are
+    -- retired, see combat/modern_movepool_damage.lua's own header).
+    local drainPercent = (info.drain or 0) ~= 0 and info.drain or nil
+    if not (flinchChance or confuseChance or ailmentChance or statChance or drainPercent) then return end
     local applyOk, err = pcall(function()
       -- isGen2Battle is looked up lazily (not hoisted to a local at the
       -- top of this file) because installMovepoolEffects runs during
@@ -190,19 +260,178 @@ local function installMovepoolEffects(mod)
         if gen2 then return lo + battle.random(hi - lo + 1) end
         return battle.rng(lo, hi)
       end
-      if flinchChance and percentRoll(flinchChance) then
+      -- Phase 3a (abilities/engine/status_immunity.lua): INNERFOCUS/
+      -- OWNTEMPO gates, looked up lazily for the same reason isGen2Battle
+      -- above is -- this closure only runs during a real battle, by which
+      -- point status_immunity.lua has finished loading regardless of
+      -- install order.
+      local hasStatusImmunity = mod.exports.hasStatusImmunity
+      -- Real, confirmed double-application guard, added after an initial
+      -- pass missed it (caught by direct review, not assumed correct):
+      -- this gen's own real modeled flag. When true, THIS move's real
+      -- effect already runs natively for THIS gen (a real EFFECT_X_HIT-
+      -- style handler, confirmed by the earlier move-completeness audit
+      -- excluding exactly these moves from needing new work at all) --
+      -- ailment/statChange must NOT also roll independently on top of
+      -- that, the same reasoning already applied to drain below. Flinch/
+      -- confusion are exempt from this gate on purpose: national_dex's
+      -- own gen1Effect/gen2Effect ids never model flinch/confusion chance
+      -- at all (confirmed earlier this session, the original reason this
+      -- listener was built generic in the first place), so there is
+      -- nothing native for those two to collide with.
+      local modeled = gen2 and info.gen2EffectModeled or ((not gen2) and info.gen1EffectModeled)
+      -- Phase 7 (prevent bucket): Sheer Force/Shield Dust -- both real
+      -- "the secondary/extra effects of [these] moves never happen"
+      -- abilities, and this generic listener (flinch/ailment/confuse/
+      -- stat-change) is the exact real definition of "secondary effect"
+      -- for every move that reaches it -- not drain/recoil, which is the
+      -- move's own primary mechanic, not a chance-based extra (real Sheer
+      -- Force, confirmed via Showdown source, leaves draining moves'
+      -- drain untouched). Sheer Force is the attacking side (its own
+      -- separate +30% power boost is a damage_dealt_multiplier-kind
+      -- effect, a different phase's own bucket, not built here); Shield
+      -- Dust is the defending side.
+      local abilityIdOf = mod.exports.abilityIdOf
+      local secondarySuppressed = abilityIdOf
+        and ((user and abilityIdOf(user) == "SHEERFORCE") or (target and abilityIdOf(target) == "SHIELDDUST"))
+      if secondarySuppressed then
+        flinchChance, confuseChance, ailmentChance, statChance = nil, nil, nil, nil
+      end
+      if flinchChance and percentRoll(flinchChance)
+          and not (hasStatusImmunity and hasStatusImmunity(target, "flinch", battle)) then
         if gen2 then
           battle:volatile(target).flinched = true
         else
           target.flinched = true
         end
       end
-      if confuseChance and percentRoll(confuseChance) then
+      if confuseChance and percentRoll(confuseChance)
+          and not (hasStatusImmunity and hasStatusImmunity(target, "confusion", battle)) then
         if gen2 then
           local vol = battle:volatile(target)
           if not vol.confuseCount then vol.confuseCount = rangeRoll(2, 5) end
         elseif not target.confusedTurns then
           target.confusedTurns = rangeRoll(2, 5)
+        end
+      end
+      -- Generic secondary status (poison/burn/paralysis/freeze/sleep) --
+      -- always opponent-directed, reuses the exact primitives Phase 0/3
+      -- already made generic and dual-gen-aware: StatusRegistry.inflict
+      -- (Gen 1, with opts.secondary+opts.moveType so its own real
+      -- same-type-can't-be-secondary-inflicted rule applies for free)
+      -- and Battle:applyStatus (Gen 2). Both already respect ability
+      -- immunity (status_immunity.lua wraps these same functions) and
+      -- the one-status-at-a-time rule natively -- nothing to re-check
+      -- here.
+      if ailmentChance and not modeled and percentRoll(ailmentChance) then
+        if gen2 then
+          battle:applyStatus(target, ailmentCodes.gen2, moveId)
+        else
+          local StatusRegistry = require("src.battle.StatusRegistry")
+          StatusRegistry.inflict(battle, target, ailmentCodes.gen1,
+            { secondary = true, moveType = info.type, source = moveId, toxic = ailmentCodes.isToxic })
+        end
+      end
+      -- Generic secondary stat change -- reuses changeStage (Phase 0's
+      -- own shared primitive, Contrary/Simple-aware since Phase 8) for
+      -- attack/defense/spa/spd, and Gen 2's native
+      -- changeStageAgainstMist for speed/accuracy/evasion -- the exact
+      -- same NATIVE_STATS split abilities/engine/switchin_stat_change
+      -- .lua's own header already documents and this file's own
+      -- STAT_KEY mirrors. Silently skipped (not guessed) when the prose
+      -- text names neither "user's" nor "target's", or names both --
+      -- a wrong direction is a real gameplay bug, an unbuilt effect is
+      -- just an honest gap.
+      if statChance and not modeled and percentRoll(statChance) and statSelfDirected ~= nil then
+        local changeStage = mod.exports.changeStage
+        -- NATIVE_STATS (speed/accuracy/evasion): combat/modern_combat
+        -- .lua's own changeStage store (confirmed by direct read of its
+        -- ensureStageState) only ever tracks attack/defense/spa/spd --
+        -- writing "speed" through it would be recorded nowhere anything
+        -- reads back, a silent no-op. Gen 2 has a real, proven route for
+        -- these three (Battle:changeStageAgainstMist, the same one
+        -- abilities/engine/switchin_stat_change.lua's own NATIVE_STATS
+        -- branch already uses).
+        --
+        -- Gen 1 CLOSED (2026-08-27) -- an earlier pass here claimed no
+        -- confirmed store existed; that was wrong, found by checking the
+        -- wrong file (BattleState.lua) and stopping instead of also
+        -- checking Damage.lua, the actual accuracy-formula consumer.
+        -- Real, confirmed, direct field: `mon.stages.speed`/`.accuracy`/
+        -- `.evasion` (src/battle/Damage.lua:88-94 reads
+        -- `attacker.stages.speed`, :121-122 reads `attacker.stages
+        -- .accuracy`/`defender.stages.evasion` directly) -- a plain,
+        -- clamped -6..6 number per mon, exactly the same shape Gen 2's
+        -- own native stage table already is. Written directly here,
+        -- gated by the same boss-fight statsDrop protection changeStage
+        -- itself already checks (bossStatsDropBlocked) -- Mist's own
+        -- check is NOT replicated here (that logic is private to
+        -- modern_combat.lua's own closure, not exported, and Mist
+        -- blocking a hostile speed/accuracy/evasion drop specifically is
+        -- a narrower edge case than the boss-protection rule) -- a
+        -- smaller, named simplification, not a silent gap.
+        local NATIVE_STATS = { speed = true, accuracy = true, evasion = true }
+        for _, sc in ipairs(info.statChanges or {}) do
+          local statKey = STAT_KEY[sc.stat]
+          if statKey and sc.change and changeStage then
+            local who = statSelfDirected and user or target
+            local fromEnemy = not statSelfDirected
+            if who then
+              if NATIVE_STATS[statKey] then
+                -- Real Foresight/Miracle Eye rule: blocks the TARGET's
+                -- own future evasion raises while active (the "current
+                -- boost reset to 0" half lives in combat/modern_status_
+                -- volatiles.lua's own Foresight/Miracle Eye handlers).
+                local evasionBlocked = statKey == "evasion" and sc.change > 0
+                  and (who.foresighted or who.miracleEyed)
+                -- Phase 7 (prevent bucket): Clear Body/Full Metal Body/
+                -- White Smoke/Hyper Cutter/Big Pecks/Keen Eye/Mind's Eye/
+                -- Flower Veil's real "can't have this stat lowered by an
+                -- opponent" family, same shared definition Gen 2's own
+                -- changeStageAgainstMist wrap (stage_change_transform.lua)
+                -- already uses -- Gen 1 has no Mist-equivalent check to
+                -- piggyback on here (see this block's own pre-existing
+                -- note above), so this is checked directly.
+                local statDropBlockedByAbility = mod.exports.statDropBlockedByAbility
+                local abilityBlocked = fromEnemy and sc.change < 0 and statDropBlockedByAbility
+                  and statDropBlockedByAbility(who, gen2, statKey)
+                if evasionBlocked or abilityBlocked then
+                  -- no-op
+                elseif gen2 then
+                  battle:changeStageAgainstMist(user, who, statKey, sc.change)
+                elseif not (mod.exports.bossStatsDropBlocked and mod.exports.bossStatsDropBlocked(battle, who, sc.change)) then
+                  who.stages = who.stages or {}
+                  who.stages[statKey] = math.max(-6, math.min(6, (who.stages[statKey] or 0) + sc.change))
+                end
+              else
+                changeStage(battle, who, statKey, sc.change, fromEnemy, gen2)
+              end
+            end
+          end
+        end
+      end
+      if drainPercent and (damage or 0) > 0 and user then
+        -- Reuses the SAME `modeled` flag computed once above (flinch's
+        -- own comment) rather than a second, redundant computation.
+        if not modeled then
+          local m = user.mon or user
+          local maxHp = m.stats and m.stats.hp
+          local amount = math.max(1, math.floor(damage * math.abs(drainPercent) / 100))
+          if drainPercent > 0 then
+            if maxHp then m.hp = math.min(maxHp, (m.hp or 0) + amount) end
+          else
+            -- Real recoil immunities: Rock Head (blocks recoil
+            -- unconditionally, no other effect to this ability) and
+            -- Magic Guard (abilities/engine/damage_immunity.lua's own
+            -- indirect-damage scope, extended here -- recoil isn't
+            -- direct move damage to an opponent, the same real rule
+            -- that already covers status residual/sand chip).
+            local abilityIdOf = mod.exports.abilityIdOf
+            local userAbility = abilityIdOf and abilityIdOf(user)
+            if userAbility ~= "ROCKHEAD" and userAbility ~= "MAGICGUARD" then
+              m.hp = math.max(0, (m.hp or 0) - amount)
+            end
+          end
         end
       end
     end)
@@ -215,15 +444,53 @@ local function installMovepoolEffects(mod)
   -- Unconditional registration, genuinely independent of any per-move
   -- data -- only SANDTOMB's own live record gets patched to point at it
   -- (see wireMovepoolSubEffects below).
+  -- Real Gen 2 dispatch bug fixed 2026-08-27, same shape as the flinch/
+  -- confuse bug this file's own header already documents: a single-
+  -- param `function(ctx)` silently captured Gen 2's own raw Battle
+  -- instance (which has no `.target`) as `ctx`, so this never actually
+  -- did anything on Gen 2. Bridged through normalize() now, same as
+  -- every other dual-gen handler in this file.
+  --
+  -- Gen 2 half REBUILT ENTIRELY, not just bridged: confirmed by direct
+  -- source read that Gen 2 already has a complete, real, working trap
+  -- mechanic of its own (Battle:tickWrap -- real 1/16 max HP chip per
+  -- turn, switchLocked/runRefused pins, breakTrapsOnSend cleanup -- ALL
+  -- already implemented and consumed correctly, gen2/Battle.lua). Its
+  -- own trigger (`def.effect == "EFFECT_TRAP_TARGET"`) never fires for
+  -- these moves because national_dex's own base registry assigns them
+  -- plain EFFECT_NORMAL_HIT instead (confirmed directly, registry_gen2
+  -- .lua) -- rather than fight that string match, this writes the exact
+  -- same real fields Battle:tickWrap and friends already consume
+  -- (`wrapCount`/`wrapMove`/`wrapMoveId`, via battle:volatile) directly.
+  -- We decide a target is now trapped; the engine's own pre-existing
+  -- machinery does everything downstream of that decision, exactly the
+  -- "native only executes what it's told" split this session's own
+  -- combat/modern_status_turn_loss.lua already established.
   mod.content.move_effects:register("GALAR_TRAP_EFFECT", {
     kind = "secondary",
-    run = function(ctx)
-      if ctx.target then
+    -- normalize(a,b,c) deliberately drops the move id (confirmed by
+    -- direct read of its own definition -- returns only battle/user/
+    -- target/gen2), and Gen 2's real six-positional-arg dispatch shape
+    -- (self, attacker, defender, def, moveId, sureHit) means a
+    -- 3-param function signature silently never receives arg 5 at
+    -- all -- both real traps for this handler, not guessed around.
+    run = function(a, b, c, d, e)
+      local n = normalize(a, b, c)
+      if not n.target then return {} end
+      local moveId = n.gen2 and e or (a.move and a.move.id)
+      if n.gen2 then
+        local state = n.battle:volatile(n.target)
+        if not state.wrapCount and (state.substitute or 0) <= 0 then
+          state.wrapCount = n.battle.random(2) + 4 -- 4-5 turns, real modern duration
+          state.wrapMove = moveId
+          state.wrapMoveId = moveId
+        end
+      else
         -- Approximated duration (4-5 turns); real Gen 1 Bind/Wrap use a
         -- per-turn release roll this engine's equivalent wasn't confirmed.
-        ctx.target.trappingTurns = ctx.rng(4, 5)
-        ctx.target.boundTurns = ctx.target.trappingTurns
-        ctx.target.trapMove = ctx.move and ctx.move.id
+        n.target.trappingTurns = n.battle.rng(4, 5)
+        n.target.boundTurns = n.target.trappingTurns
+        n.target.trapMove = moveId
       end
       return {}
     end,
@@ -262,8 +529,58 @@ local BYPASSES_PROTECT = { FEINT = true }
 -- or gmax_moves.lua already registers/patches directly, with no
 -- national_dex record at all, so they were never in scope here).
 local CUSTOM_EFFECT_PATCH = {
-  -- main.lua's own GALAR_TRAP_EFFECT (installMovepoolEffects above)
+  -- main.lua's own GALAR_TRAP_EFFECT (installMovepoolEffects above) --
+  -- every real trap move (ailment="trap" on national_dex), not just
+  -- Sand Tomb, now that the Gen 2 dispatch bug is fixed
   SANDTOMB = "GALAR_TRAP_EFFECT",
+  BIND = "GALAR_TRAP_EFFECT",
+  WRAP = "GALAR_TRAP_EFFECT",
+  CLAMP = "GALAR_TRAP_EFFECT",
+  FIRE_SPIN = "GALAR_TRAP_EFFECT",
+  WHIRLPOOL = "GALAR_TRAP_EFFECT",
+  THUNDERCAGE = "GALAR_TRAP_EFFECT",
+  SNAPTRAP = "GALAR_TRAP_EFFECT",
+  MAGMASTORM = "GALAR_TRAP_EFFECT",
+  INFESTATION = "GALAR_TRAP_EFFECT",
+  -- combat/modern_status_volatiles.lua -- real Showdown-verified bespoke
+  -- volatiles (Leech Seed, Nightmare, Ingrain, Yawn, Disable, Embargo,
+  -- Heal Block/Psychic Noise, Throat Chop, Perish Song, Foresight/
+  -- Miracle Eye/Odor Sleuth, Smack Down/Thousand Arrows, Telekinesis,
+  -- Uproar). Odor Sleuth reuses Foresight's own real mechanic (Ghost-
+  -- immunity negation); Thousand Arrows reuses Smack Down's (Flying-
+  -- immunity-to-Ground negation) -- both genuinely share the identical
+  -- real effect, confirmed against national_dex's own prose text, not
+  -- duplicated code.
+  LEECH_SEED = "GALAR_LEECHSEED_EFFECT",
+  SAPPYSEED = "GALAR_LEECHSEED_EFFECT",
+  NIGHTMARE = "GALAR_NIGHTMARE_EFFECT",
+  INGRAIN = "GALAR_INGRAIN_EFFECT",
+  YAWN = "GALAR_YAWN_EFFECT",
+  DISABLE = "GALAR_DISABLE_EFFECT",
+  EMBARGO = "GALAR_EMBARGO_EFFECT",
+  HEALBLOCK = "GALAR_HEALBLOCK_EFFECT",
+  PSYCHICNOISE = "GALAR_PSYCHICNOISE_EFFECT",
+  THROATCHOP = "GALAR_THROATCHOP_EFFECT",
+  PERISHSONG = "GALAR_PERISHSONG_EFFECT",
+  FORESIGHT = "GALAR_FORESIGHT_EFFECT",
+  ODORSLEUTH = "GALAR_FORESIGHT_EFFECT",
+  MIRACLEEYE = "GALAR_MIRACLEEYE_EFFECT",
+  SMACKDOWN = "GALAR_SMACKDOWN_EFFECT",
+  THOUSANDARROWS = "GALAR_SMACKDOWN_EFFECT",
+  TELEKINESIS = "GALAR_TELEKINESIS_EFFECT",
+  UPROAR = "GALAR_UPROAR_EFFECT",
+  ELECTROSHOT = "GALAR_ELECTROSHOT_EFFECT",
+  STOCKPILE = "GALAR_STOCKPILE_EFFECT",
+  SWALLOW = "GALAR_SWALLOW_EFFECT",
+  -- SPITUP is NOT here -- it needs no custom .effect at all, wired
+  -- entirely through registerPowerOverride + a battle.damage_dealt
+  -- listener instead (see combat/modern_status_volatiles.lua's own
+  -- Stockpile/Swallow/Spit Up section for why).
+  -- Raging Fury shares Outrage's own exact real mechanic (2-3 turn
+  -- rampage lock, then self-confuse) -- reused directly, not
+  -- duplicated. Same Gen 2 honest gap as Outrage itself (see combat/
+  -- modern_movepool_damage.lua's own header for why).
+  RAGINGFURY = "GALAR_OUTRAGE_EFFECT",
   -- combat/modern_weather.lua
   RAINDANCE = "GALAR_RAINDANCE_EFFECT",
   SUNNYDAY = "GALAR_SUNNYDAY_EFFECT",
@@ -271,10 +588,19 @@ local CUSTOM_EFFECT_PATCH = {
   SNOWSCAPE = "GALAR_SNOWSCAPE_EFFECT",
   SOLARBEAM = "GALAR_SOLARBEAM_EFFECT",
   -- combat/modern_movepool_damage.lua
-  DRAININGKISS = "GALAR_DRAIN_EFFECT_75",
+  -- DRAININGKISS's own GALAR_DRAIN_EFFECT_75 patch retired 2026-08-27 --
+  -- superseded by installGenericDrainRecoil's live `drain` field read
+  -- (see this file's own header), which is also dual-gen-correct where
+  -- that one wasn't.
   HEALPULSE = "GALAR_HEALPULSE_EFFECT",
   LIFEDEW = "GALAR_LIFEDEW_EFFECT",
   SYNTHESIS = "GALAR_SYNTHESIS_EFFECT",
+  MOONLIGHT = "GALAR_MOONLIGHT_EFFECT",
+  MORNINGSUN = "GALAR_MORNINGSUN_EFFECT",
+  SHOREUP = "GALAR_SHOREUP_EFFECT",
+  FLORALHEALING = "GALAR_FLORALHEALING_EFFECT",
+  PURIFY = "GALAR_PURIFY_EFFECT",
+  LUNARBLESSING = "GALAR_LUNARBLESSING_EFFECT",
   PAINSPLIT = "GALAR_PAINSPLIT_EFFECT",
   BOUNCE = "GALAR_BOUNCE_EFFECT",
   OUTRAGE = "GALAR_OUTRAGE_EFFECT",
@@ -289,6 +615,7 @@ local CUSTOM_EFFECT_PATCH = {
   -- combat/modern_hazards.lua
   STEALTHROCK = "GALAR_STEALTHROCK_EFFECT",
   TOXICSPIKES = "GALAR_TOXICSPIKES_EFFECT",
+  STICKYWEB = "GALAR_STICKYWEB_EFFECT",
   -- combat/modern_movepool_stages.lua -- primary() (pure status moves)
   AROMATICMIST = "GMAX_AROMATICMIST_EFFECT",
   BULKUP = "GMAX_BULKUP_EFFECT",
@@ -1079,6 +1406,15 @@ return function(mod)
   local installModernStatsScreen = loadSibling(mod, "stats/modern_stats_screen.lua")
   installModernStatsScreen(mod)
 
+  -- Dev Tools > DEVSTATS: an opt-in ("dev_tools" option, OFF by default)
+  -- diagnostic party-submenu screen -- ability/nature/Tera/Dynamax/
+  -- Gigantamax Factor/real combat stats plus full EV/IV distribution.
+  -- Loaded right after modern_stats_screen.lua since it reuses the exact
+  -- same wide-UI-surface technique and mod.exports.ModernStats -- see
+  -- stats/dev_stats_screen.lua's own header for the full grounding.
+  local installDevStatsScreen = loadSibling(mod, "stats/dev_stats_screen.lua")
+  installDevStatsScreen(mod)
+
   -- ------- Phase 11: native modern combat formulas -------
   -- Replaces an earlier live Showdown/Node bridge (TCP process + async
   -- protocol) that proved fragile across a real process boundary (a
@@ -1142,6 +1478,18 @@ return function(mod)
   local installModernCombat = loadSibling(mod, "combat/modern_combat.lua")
   installModernCombat(mod)
 
+  -- Move targeting resolver -- moved up here (ahead of ANY switch_in
+  -- ability engine) because abilities/engine/switchin_stat_change.lua's
+  -- own foes-scope switch_in abilities (Intimidate) need this file's
+  -- mod.exports.requestAdjacency, the same "g9.request_adjacency" hook
+  -- moves use, generalized to ability triggers -- see combat/
+  -- MULTI_BATTLE_HOOKS.md's own Targeting section for the full contract.
+  -- Only needs modern_combat.lua (installed just above) and
+  -- src/mods/Runtime.lua (a hard engine dependency, always present), so
+  -- this is safe to load this early.
+  local installMoveTargeting = loadSibling(mod, "combat/move_targeting.lua")
+  installMoveTargeting(mod)
+
   -- Boss-fight protection flags (mod.exports.setBossFightProtections/
   -- bossFightHas) -- loaded right after modern_combat.lua since several
   -- of its own primitives (setWeather/canSetWeather, changeStage/
@@ -1174,6 +1522,42 @@ return function(mod)
   installSwitchinStatChange(mod, statChangeSwitchinData)
   local installModernCombatProtect = loadSibling(mod, "combat/modern_combat_protect.lua")
   installModernCombatProtect(mod)
+
+  -- Phase 3 of the ability roadmap: status/type immunity. See each
+  -- engine file's own header for the full grounding -- status_immunity
+  -- must load after move_targeting.lua (Sweet Veil's ally check reuses
+  -- requestAdjacency); type_immunity must load after modern_combat_
+  -- protect.lua's own "battle.damage" wrap so a protected target's
+  -- absorb ability correctly never triggers (priority ordering handles
+  -- this at call time, not install time, but installing after keeps the
+  -- wrap-chain's own priority comment legible against real load order).
+  local statusImmunityData = loadSibling(mod, "abilities/data/status_immunity.lua")
+  local installStatusImmunity = loadSibling(mod, "abilities/engine/status_immunity.lua")
+  installStatusImmunity(mod, statusImmunityData)
+  -- Real ownership of the paralysis/sleep/freeze turn-loss DECISION
+  -- (standing "we are the bible of combat" principle, extended from
+  -- move ordering to status-based turn loss) -- see that file's own
+  -- header for the full grounding, including the real Showdown-source-
+  -- verified corrections this makes over the ported native logic.
+  -- Loaded here (after status_immunity.lua, for abilityIdOf's Early
+  -- Bird check) rather than back with the rest of installMovepoolEffects
+  -- -- this is real ability-adjacent combat-ownership work, not movepool
+  -- wiring.
+  local installStatusTurnLoss = loadSibling(mod, "combat/modern_status_turn_loss.lua")
+  installStatusTurnLoss(mod)
+  local typeImmunityData = loadSibling(mod, "abilities/data/type_immunity.lua")
+  local installTypeImmunity = loadSibling(mod, "abilities/engine/type_immunity.lua")
+  installTypeImmunity(mod, typeImmunityData)
+
+  -- Phase 4 of the ability roadmap: stat_multiplier. Loads after
+  -- status_immunity.lua (reuses its canonicalStatusOf for Flare Boost/
+  -- Toxic Boost's own status check) -- see that engine file's own header
+  -- for the full grounding, including why this wraps Battle:battleStat
+  -- directly rather than any of this mod's existing damage-modifier
+  -- chains.
+  local statMultiplierData = loadSibling(mod, "abilities/data/stat_multiplier.lua")
+  local installStatMultiplier = loadSibling(mod, "abilities/engine/stat_multiplier.lua")
+  installStatMultiplier(mod, statMultiplierData)
   -- Terastallization's own combat mechanics (STAB fix, Stellar defense/
   -- economy, Tera Blast's Stellar variant) -- consumes modern_combat.lua's
   -- exports, must load after it. See combat/modern_tera.lua's own header.
@@ -1225,6 +1609,16 @@ return function(mod)
   local installMimicryTerrain = loadSibling(mod, "abilities/engine/mimicry_terrain.lua")
   installMimicryTerrain(mod, mimicryTerrainData)
 
+  -- Phase 2: damage_dealt_multiplier/damage_taken_multiplier abilities --
+  -- consumes modern_combat.lua's registerDamageModifier/
+  -- registerPostEffectivenessModifier (installed above) and ability_
+  -- dispatch.lua's abilityIdOf/abilityBehaviorOf. See abilities/engine/
+  -- damage_multiplier.lua's own header for the full grounding, including
+  -- the placeholder move-flag data relayed to national_dex's own dev.
+  local damageMultiplierData = loadSibling(mod, "abilities/data/damage_multiplier.lua")
+  local installDamageMultiplier = loadSibling(mod, "abilities/engine/damage_multiplier.lua")
+  installDamageMultiplier(mod, damageMultiplierData)
+
   -- Turn order: Gen 9/Showdown-accurate priority + Speed + Trick-Room-
   -- aware + random-tie comparator, replacing gen2/Battle.lua's own native
   -- one via the battle.turn_order hook. No dependency on modern_combat.lua's
@@ -1233,6 +1627,58 @@ return function(mod)
   -- combat/MULTI_BATTLE_HOOKS.md for the full grounding.
   local installTurnOrder = loadSibling(mod, "combat/turn_order.lua")
   installTurnOrder(mod)
+
+  -- Phase 5 of the ability roadmap: priority_change. Loads right after
+  -- turn_order.lua (needs its registerPriorityModifier) -- see that
+  -- engine file's own header for the full grounding, including the real
+  -- Gen 7+ Prankster/Dark-type immunity it also wires.
+  local priorityChangeData = loadSibling(mod, "abilities/data/priority_change.lua")
+  local installPriorityChange = loadSibling(mod, "abilities/engine/priority_change.lua")
+  installPriorityChange(mod, priorityChangeData)
+
+  -- Phase 6 of the ability roadmap: heal / crit_change /
+  -- accuracy_multiplier. See each engine file's own header for the full
+  -- grounding -- three genuinely separate real primitives (turn-end
+  -- residual + poison-residual replacement for heal, the existing
+  -- registerCritStageModifier chain for crit_change, and a brand new
+  -- registerAccuracyModifier chain built on Battle:accuracyRoll's own
+  -- real "battle.accuracy" hook for accuracy_multiplier).
+  local healData = loadSibling(mod, "abilities/data/heal.lua")
+  local installHeal = loadSibling(mod, "abilities/engine/heal.lua")
+  installHeal(mod, healData)
+  local critChangeData = loadSibling(mod, "abilities/data/crit_change.lua")
+  local installCritChange = loadSibling(mod, "abilities/engine/crit_change.lua")
+  installCritChange(mod, critChangeData)
+  local accuracyMultiplierData = loadSibling(mod, "abilities/data/accuracy_multiplier.lua")
+  local installAccuracyMultiplier = loadSibling(mod, "abilities/engine/accuracy_multiplier.lua")
+  installAccuracyMultiplier(mod, accuracyMultiplierData)
+
+  -- Phase 8a of the ability roadmap ("other" bucket, first batch --
+  -- 122 abilities total, far larger than any prior bucket, so this is
+  -- a curated first pass, not the whole thing). See each engine file's
+  -- own header for the full grounding.
+  local stageChangeTransformData = loadSibling(mod, "abilities/data/stage_change_transform.lua")
+  local installStageChangeTransform = loadSibling(mod, "abilities/engine/stage_change_transform.lua")
+  installStageChangeTransform(mod, stageChangeTransformData)
+  local damageImmunityData = loadSibling(mod, "abilities/data/damage_immunity.lua")
+  local installDamageImmunity = loadSibling(mod, "abilities/engine/damage_immunity.lua")
+  installDamageImmunity(mod, damageImmunityData)
+  local statusCureData = loadSibling(mod, "abilities/data/status_cure.lua")
+  local installStatusCure = loadSibling(mod, "abilities/engine/status_cure.lua")
+  installStatusCure(mod, statusCureData)
+  local contactRetaliationData = loadSibling(mod, "abilities/data/contact_retaliation.lua")
+  local installContactRetaliation = loadSibling(mod, "abilities/engine/contact_retaliation.lua")
+  installContactRetaliation(mod, contactRetaliationData)
+
+  -- Real Showdown-verified logic for the bespoke "no flag covers this"
+  -- moves (Leech Seed, Nightmare, Ingrain, Yawn, Disable, Embargo,
+  -- Heal Block/Psychic Noise, Throat Chop, Perish Song, Foresight/
+  -- Miracle Eye/Odor Sleuth, Smack Down/Thousand Arrows, Telekinesis,
+  -- Uproar, Dire Claw/Tri Attack) -- see that file's own header for the
+  -- full grounding, verified against Showdown's own real source
+  -- directly, not from memory.
+  local installStatusVolatiles = loadSibling(mod, "combat/modern_status_volatiles.lua")
+  installStatusVolatiles(mod)
 
   -- Trick Room's own real activation -- fills the exact gap
   -- combat/turn_order.lua's own header flags ("always false today"),
@@ -1286,6 +1732,41 @@ return function(mod)
   -- enforcement-touch-point grounding.
   local installModernStatusEffects = loadSibling(mod, "combat/modern_status_effects.lua")
   installModernStatusEffects(mod)
+
+  -- The inflict_status kind bucket (16 real abilities) -- never touched
+  -- by any earlier ability phase despite the roadmap otherwise covering
+  -- 6 of the 8 real-count-weighted buckets by this point. Must load
+  -- here, right after combat/modern_status_effects.lua (reuses its own
+  -- real tryAttract primitive for Cute Charm, just exported) -- an
+  -- earlier position in this file's own sequence would have asserted
+  -- before that export existed.
+  local inflictStatusData = loadSibling(mod, "abilities/data/inflict_status.lua")
+  local installInflictStatus = loadSibling(mod, "abilities/engine/inflict_status.lua")
+  installInflictStatus(mod, inflictStatusData)
+
+  -- Phase 7 (`prevent` bucket, 43 real abilities) -- first real batch,
+  -- 24 built this pass (plus 4 credited that were already built
+  -- incidentally under earlier phases: ROCKHEAD/recoil-block in this
+  -- file's own generic drain handler above, DESOLATELAND/PRIMORDIALSEA's
+  -- Water/Fire move-fail gate in abilities/engine/switchin_primal_
+  -- weather.lua, POISONHEAL's residual replacement in abilities/engine/
+  -- heal.lua). Each engine file documents its own real primitive; see
+  -- PROGRESS.md for the full per-ability breakdown and the real,
+  -- honestly-named remainder. Priority-fail needs turn_order.lua's own
+  -- movePriority (loaded well above); trap/misc need modern_combat.lua's
+  -- curTypesOf/changeStage and ability_dispatch.lua's abilityIdOf, both
+  -- also already loaded by this point.
+  local preventPriorityFailData = loadSibling(mod, "abilities/data/prevent_priority_fail.lua")
+  local installPreventPriorityFail = loadSibling(mod, "abilities/engine/prevent_priority_fail.lua")
+  installPreventPriorityFail(mod, preventPriorityFailData)
+
+  local trapAbilitiesData = loadSibling(mod, "abilities/data/trap_abilities.lua")
+  local installTrapAbilities = loadSibling(mod, "abilities/engine/trap_abilities.lua")
+  installTrapAbilities(mod, trapAbilitiesData)
+
+  local preventMiscData = loadSibling(mod, "abilities/data/prevent_misc.lua")
+  local installPreventMisc = loadSibling(mod, "abilities/engine/prevent_misc.lua")
+  installPreventMisc(mod, preventMiscData)
 
   -- Self-switch moves (U-turn, Volt Switch) -- consumes
   -- mod.exports.requestSwitch, installed above; see
@@ -1436,5 +1917,14 @@ return function(mod)
   -- custom_battle_scene, gimmick_dynamax, gen2_wide_scene) gets a chance
   -- to consume the frame -- see move_availability_gate.lua's own header.
   local installMoveAvailabilityGate = loadSibling(mod, "combat/move_availability_gate.lua")
-  installMoveAvailabilityGate(mod, learnsetOwnership.isMoveUsable)
+  -- CONFIRMED live crash, this session: learnset_ownership.lua's own
+  -- return table uses the key `isUsable` (its own local function's real
+  -- name), never `isMoveUsable` -- that second name only ever existed as
+  -- a SEPARATE mod.exports.isMoveUsable assignment inside that file, not
+  -- on this table. Reading .isMoveUsable off the table itself was always
+  -- nil, silently, until this specific gate install actually tried to
+  -- CALL it (move_availability_gate.lua:46) and crashed every update
+  -- frame -- not something these two files' earlier edits this session
+  -- introduced, a pre-existing naming mismatch this exposed.
+  installMoveAvailabilityGate(mod, learnsetOwnership.isUsable)
 end

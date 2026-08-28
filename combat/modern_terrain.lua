@@ -230,7 +230,12 @@ return function(mod)
   local nativeUseMove = Battle.useMove
   function Battle:useMove(attacker, defender, moveId)
     if self.terrain == "PSYCHIC" and defender and defender ~= attacker then
-      local priority = self:movePriority(moveId)
+      -- caster-aware since Phase 5 (abilities/engine/priority_change.lua):
+      -- real Psychic Terrain also blocks a Prankster-boosted status move,
+      -- which only reads as priority > 0 once movePriority knows WHO is
+      -- using it -- without attacker here this would silently miss that
+      -- real interaction (the move's own base priority is 0).
+      local priority = self:movePriority(moveId, attacker)
       if priority and priority > 0 and affectedByTerrain(self, defender) then
         self:emit({ kind = "message",
           text = self:monName(defender) .. " surrounds itself with psychic terrain!" })

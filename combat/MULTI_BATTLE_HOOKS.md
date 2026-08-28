@@ -159,16 +159,116 @@ the whole re-sort-after-every-action mechanic (PR #6100's actual rule)
 falls out for free — it's already how `resolveTurnActions` is specified
 to work.
 
-## Also not built yet: spread-move damage reduction
+## Targeting: the same ownership split, applied to adjacency
 
-Real Gen 9 rule: a move that hits more than one target the same turn
-(Earthquake, Surf, Discharge, etc. in an actual multi-battler format)
-deals 0.75x damage to each target hit, versus full damage against a
-single target. TODO, flagged in `modern_combat.lua`'s own
-`registerDamageModifier` header — needs a target COUNT on the damage
-`ctx`, which nothing in this 2-battler engine can ever produce above 1.
-Same root cause as everything else in this document: no multi-battler
-data model exists yet.
+**Update, 2026-08-27**: this half is now real, built, and waiting —
+unlike turn order, targeting doesn't need the engine-level battler-slot
+gap closed first, since it's a pure per-move-use function of data a
+caller hands in, not a standing turn-resolution loop.
+
+`combat/move_targeting.lua` exports:
+
+```lua
+mod.exports.resolveMoveTargets(battle, caster, moveId, chosenTarget) -> { battler, ... }
+```
+
+Same principle as `resolveTurnActions`, but **the trigger for asking a
+caller for position data lives on OUR side, not theirs.** An earlier
+draft of this had battle scene call a query function first to decide
+whether to bother calling the resolver — correctly rejected: that put a
+comparator over move data on the wrong side of the seam, for a fact
+only this mod needs to know (the move's own real `target` archetype).
+
+`chosenTarget` is just whatever single mon the caller already has in
+hand — the same thing it would otherwise pass straight to
+`battle:useMove` as the defender, never a separately-built "adjacency
+bundle." For the overwhelming majority of moves (real archetype
+`"selected-pokemon"`), that's the whole story — `resolveMoveTargets`
+returns `{chosenTarget}` and never asks anyone for anything.
+
+Only for the two archetypes that structurally can't be satisfied by one
+already-known target — `"all-other-pokemon"` (Earthquake, Surf — every
+adjacent battler except the caster, both sides at once) and
+`"all-opponents"` (Muddy Water — every adjacent enemy only), both
+confirmed directly against live national_dex records — does this file
+fire a request, through the same hook bus `combat/turn_order.lua`
+already uses for `battle.turn_order` (confirmed generic in
+`src/mods/Runtime.lua`/`Hooks.lua`, not engine-exclusive — any code can
+call a named hook, any mod can wrap one):
+
+```lua
+Runtime.call("g9.request_adjacency", fallbackFn, battle, caster, moveId)
+-- -> { allies = {...}, enemies = {...} }  -- real roster, caster excluded
+```
+
+A battle-scene mod's entire contribution is one handler:
+
+```lua
+mod.hooks:wrap("g9.request_adjacency", function(nextFn, battle, caster, moveId)
+  return { allies = {...}, enemies = {...} }
+end, 0, "your-mod-id")
+```
+
+No move-awareness, no branching, no comparator on that side at all — it
+answers a position query whenever one arrives, full stop. We decide
+when to ask; it only ever answers. Without a battle-scene mod wrapping
+this hook, a built-in fallback degrades correctly to today's native
+two-battler case (the other of `battle.player`/`battle.enemy` is the
+only possible adjacent enemy, no allies exist) — so this is already
+correct, with zero wiring, for every format this engine runs today.
+
+Boss-fight rule, explicit and caller-side: in a boss fight, the
+`allies` a wrapped handler reports should be the FULL ally roster
+regardless of real proximity ("adjacent allies = all allies,"
+independent of which boss-fight protections are active) — this file
+has no roster to enforce that against, it can only honor whatever list
+it's handed.
+
+**Second real consumer, not move-triggered**: `move_targeting.lua` also
+exports the underlying primitive directly —
+
+```lua
+mod.exports.requestAdjacency(battle, caster, moveId) -> { allies = {...}, enemies = {...} }
+```
+
+— for anything that needs real adjacent-battler position without
+resolving a move's target list at all. `abilities/engine/
+switchin_stat_change.lua`'s foes-scope switch-in abilities (Intimidate,
+Intrepid Sword, Dauntless Shield) are the first real case: the real
+rule is "every adjacent opponent," not "the" opponent, and a hard-binary
+`(mon == battle.player) and battle.enemy or battle.player` lookup was
+exactly the class of gap this doc's own sideOf section warns about —
+correct only for today's 2-battler case. `moveId` is optional here (nil
+for a non-move trigger) — a wrapped handler never inspects it regardless
+(no move-awareness, ever), so this reuses the exact same hook and the
+exact same battle-scene-side contract with nothing new to implement.
+
+**Spread-move damage reduction is now real too**, built directly on this:
+`combat/modern_combat.lua`'s own `computeModernDamage` reads
+`ctx.opts.targetCount` (a new, purely additive field on the same `opts`
+table it already threads through — absent or 1 on every call site today,
+so a genuine no-op until a real caller sets it) and applies the real Gen
+9 0.75x-per-target rule whenever it's above 1, EXCEPT against a
+protected boss (explicit user rule: AoE diminishing is removed entirely
+in a boss fight, regardless of which boss-fight flags are active — Life
+Dew and Earthquake hit everyone at full force).
+
+Still not yet CALLABLE end to end for the spread/opponents-wide
+archetypes, same reason as `resolveTurnActions`: nothing yet wraps
+`"g9.request_adjacency"` with real position data. The `"selected-
+pokemon"` path (the overwhelming majority of moves) needs nothing new
+at all and is already correct today, since it's driven entirely by
+`chosenTarget` — whatever the caller already has.
+
+The call-flow: whoever drives move execution (today, nothing new —
+that's still the native `useMove` dispatch; eventually, whatever loop
+`resolveTurnActions` ends up calling) calls `resolveMoveTargets(battle,
+caster, moveId, chosenTarget)` at the point it would otherwise call
+`battle:useMove(...)` directly. For a multi-target result (more than
+one battler in the returned list, only possible on the two spread
+archetypes), it loops `useMove` once per resolved target, passing
+`opts.targetCount = #targets` each time so the spread-reduction
+modifier in `modern_combat.lua` applies correctly.
 
 ## The actual ask, if you're building this
 
