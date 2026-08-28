@@ -47,18 +47,19 @@ return function(mod, data)
   mod.events:on("battle.started", function(ev)
     local battle = ev and ev.battle
     if not battle then return end
-    -- Speed order, not fixed player-then-enemy -- an Electric Surge vs
-    -- Grassy Surge lead matchup must resolve fastest-first so the SLOWER
-    -- lead's terrain is what's actually left standing (setTerrain
-    -- unconditionally replaces whatever terrain was there). See
-    -- combat/turn_order.lua's own orderSwitchInMons header for the full
-    -- rule. Read lazily, not hoisted: this closure only runs later,
-    -- during a real battle, by which point every mod has loaded.
-    local order = mod.exports.orderSwitchInMons
-    local first, second = battle.player, battle.enemy
-    if order then first, second = order(battle, battle.player, battle.enemy) end
-    if first then applySwitchInAbility(battle, first) end
-    if second then applySwitchInAbility(battle, second) end
+    -- Speed order across the real, N-way roster, not a fixed player-then-
+    -- enemy pair -- an Electric Surge vs Grassy Surge lead matchup must
+    -- resolve fastest-first so the SLOWEST lead's terrain is what's
+    -- actually left standing (setTerrain unconditionally replaces
+    -- whatever terrain was there). See combat/turn_order.lua's own
+    -- orderActiveBattlers header for the full rule. Read lazily, not
+    -- hoisted: this closure only runs later, during a real battle, by
+    -- which point every mod has loaded.
+    local allActiveBattlers = mod.exports.allActiveBattlers
+    local orderActiveBattlers = mod.exports.orderActiveBattlers
+    local roster = allActiveBattlers and allActiveBattlers(battle) or { battle.player, battle.enemy }
+    local ordered = orderActiveBattlers and orderActiveBattlers(battle, roster) or roster
+    for _, mon in ipairs(ordered) do applySwitchInAbility(battle, mon) end
   end)
 
   mod.events:on("battle.battler_switched", function(ev)

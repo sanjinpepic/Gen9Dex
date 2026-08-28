@@ -56,7 +56,7 @@ return function(mod, data)
     local battle = ev and ev.battle
     if not battle then return end
     local gen2 = isGen2Battle(battle)
-    for _, mon in ipairs({ battle.player, battle.enemy }) do
+    for _, mon in ipairs(mod.exports.allActiveBattlers and mod.exports.allActiveBattlers(battle) or { battle.player, battle.enemy }) do
       if mon and (mon.hp or 0) > 0 then
         local chance = chanceFor(mon, "SHEDSKIN")
         if chance and percentRoll(battle, gen2, chance) then cureStatusOf(mon) end
@@ -74,7 +74,7 @@ return function(mod, data)
     if not battle then return end
     local gen2 = isGen2Battle(battle)
     if currentWeather(battle, gen2) ~= "RAIN" then return end
-    for _, mon in ipairs({ battle.player, battle.enemy }) do
+    for _, mon in ipairs(mod.exports.allActiveBattlers and mod.exports.allActiveBattlers(battle) or { battle.player, battle.enemy }) do
       if mon and (mon.hp or 0) > 0 and chanceFor(mon, "HYDRATION") then
         cureStatusOf(mon)
       end
@@ -100,7 +100,7 @@ return function(mod, data)
     local battle = ev and ev.battle
     if not battle then return end
     local gen2 = isGen2Battle(battle)
-    for _, mon in ipairs({ battle.player, battle.enemy }) do
+    for _, mon in ipairs(mod.exports.allActiveBattlers and mod.exports.allActiveBattlers(battle) or { battle.player, battle.enemy }) do
       if mon and (mon.hp or 0) > 0 then
         local chance = chanceFor(mon, "HEALER")
         if chance then

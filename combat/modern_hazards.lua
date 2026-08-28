@@ -107,6 +107,11 @@ return function(mod)
     end
     return h
   end
+  -- Exported (Phase 8, other bucket, Toxic Debris) -- the one real
+  -- shared accessor for this file's own hazards table, so an ability
+  -- that sets Toxic Spikes reuses the exact same 2-layer cap rather than
+  -- re-deriving it.
+  mod.exports.hazardsFor = hazardsFor
 
   -- Mon-shaped accessor for whichever generation's battler this is --
   -- Gen 1 hands a wrapper (battler.mon), Gen 2 hands the raw mon
@@ -255,6 +260,10 @@ return function(mod)
     local def = self:speciesDef(mon)
     local types = (def and def.types) or mon.types or {}
     if not isGroundedForHazards(mon, true, types) then return end
+    -- Magic Guard, real Showdown rule, fixed 2026-08-28 -- same real
+    -- predicate the Stealth Rock/Sharp Steel blocks above use.
+    local magicGuardBlocksHazard = mod.exports.magicGuardBlocksHazard
+    if magicGuardBlocksHazard and magicGuardBlocksHazard(mon) then return end
     local maxHp = mon.maxHp or (mon.stats and mon.stats.hp) or 8
     local fraction = SPIKES_DAMAGE_24THS[layers] or SPIKES_DAMAGE_24THS[3]
     local damage = math.max(1, math.floor(fraction * maxHp / 24))
@@ -353,13 +362,21 @@ return function(mod)
       local h = hazardsFor(battle, side)
       local types = curTypesOf(battler, gen2)
       local name = displayNameFor(battle, battler, gen2)
+      -- Magic Guard, real Showdown rule, fixed 2026-08-28: this same
+      -- ability already blocks status residual/Gen 1 sand/recoil/
+      -- confusion self-hit (abilities/engine/damage_immunity.lua's own
+      -- real fixes) -- entry hazards are the same real "indirect
+      -- damage" family, checked once here for both blocks below via
+      -- that file's own small exported predicate.
+      local magicGuardBlocksHazard = mod.exports.magicGuardBlocksHazard
+      local hazardImmune = magicGuardBlocksHazard and magicGuardBlocksHazard(mon)
 
       -- Stealth Rock: maxHP * effectiveness(ROCK vs types) / 8, current
       -- Showdown formula (src/battle/TypeChart.lua's own x10 scale
       -- divided back to a real fraction). A 4x-weak mon can faint from
       -- this alone, same as real games -- not clamped beyond the
       -- ordinary max(0, hp-damage) floor.
-      if h.stealthRock then
+      if h.stealthRock and not hazardImmune then
         local mult = TypeChart.effectiveness("ROCK", types) / 10
         if mult > 0 then
           local maxHp = (mon.stats and mon.stats.hp) or mon.maxHp or 1
@@ -385,7 +402,7 @@ return function(mod)
       -- Stealth Rock above may have already fainted this mon. Nothing
       -- currently sets h.sharpSteel (see header INTERACTION TODO) -- this
       -- block is real, working, and simply never triggers yet.
-      if h.sharpSteel and (mon.hp or 0) > 0 then
+      if h.sharpSteel and (mon.hp or 0) > 0 and not hazardImmune then
         local mult = TypeChart.effectiveness("STEEL", types) / 10
         if mult > 0 then
           local maxHp = (mon.stats and mon.stats.hp) or mon.maxHp or 1

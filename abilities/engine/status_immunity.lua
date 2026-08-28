@@ -80,11 +80,32 @@ return function(mod, data)
     return raw and STATUS_ALIASES[raw] or nil
   end
 
+  -- Shields Down (Phase 8, other bucket -- explicit user directive: the
+  -- Core/Meteor Form visual side stays out of scope, the combat effect
+  -- doesn't). Real, confirmed rule: while HP is 50% or above, cannot be
+  -- given a major status ailment. National_dex's own record for this
+  -- one has NO structured status_immunity effect at all (its own real
+  -- notes: "no kind models form changes... none of that is
+  -- representable") -- hardcoded here as a documented exception, the
+  -- same class of thing Earth Eater's own un-structured heal fraction
+  -- already was in an earlier phase. "any" reuses the exact same
+  -- generic value Purifying Salt/Comatose's own real structured data
+  -- already carries, so hasStatusImmunity's own caller-side check needs
+  -- no changes at all for this to work.
+  local function shieldsDownActive(mon)
+    local m = mon and (mon.mon or mon)
+    local maxHp = m and (m.maxHp or (m.stats and m.stats.hp))
+    return maxHp and maxHp > 0 and ((m.hp or 0) * 2) >= maxHp
+  end
+
   -- The one status this ability's own record blocks, or nil. Reads
   -- live off abilityBehaviorOf every call -- no caching, no precompute.
   local function blockedStatusOf(mon)
     local id = abilityIdOf(mon)
     if not (id and data[id]) then return nil end
+    if id == "SHIELDSDOWN" then
+      return shieldsDownActive(mon) and "any" or nil
+    end
     local record = abilityBehaviorOf(mon)
     local behavior = record and record.behaviour
     for _, eff in ipairs(behavior and behavior.effects or {}) do

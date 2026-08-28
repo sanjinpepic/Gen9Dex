@@ -263,7 +263,18 @@ return function(mod)
     -- Left panel: held item and the two extra mechanics fields.
     Font.drawBox(0, 7, 14, 11)
     drawLabelValue("ITEM", mon.item, 8, 48, 72, 56)
-    drawLabelValue("TERA", mon.teraType, 8, 48, 96, 56)
+    -- Real fix, explicit user request: a mon that has never Terastallized
+    -- has no mon.teraType stored yet (its only prior writer is gated on
+    -- Terastallization, currently inert -- see gigantamax/tera_state.lua's
+    -- own header), so reading the raw field always drew blank even though
+    -- a real initial type (RNG between a dual-type mon's own two types,
+    -- or its one type for a monotype) is defined. mod.exports.getTeraType
+    -- lazy-rolls AND persists that initial type into mon.teraType the
+    -- first time anything calls it -- simply opening this screen is now
+    -- enough to both roll and SAVE it, without needing to Terastallize
+    -- first.
+    local teraType = mod.exports.getTeraType and mod.exports.getTeraType(mon)
+    drawLabelValue("TERA", teraType, 8, 48, 96, 56)
     -- Dynamax Level is per-save, not per-mon (dynamax_state.lua's own
     -- storage contract) -- mon.dynamaxLevel never actually exists as a
     -- field, so reading it directly always drew NONE. Same value for

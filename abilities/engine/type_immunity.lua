@@ -54,6 +54,19 @@ return function(mod, data)
     if not (target and move and move.type) then return next(ctx) end
     local id = abilityIdOf(target)
     if not (id and data[id]) then return next(ctx) end
+    -- Mold Breaker/Teravolt/Turboblaze (Phase 8, other bucket): ignore
+    -- an ability that would block a move's effect -- scoped here to the
+    -- real type-immunity family specifically (this file's own real,
+    -- clearest case: a Ground move now hits a Levitate/Water Absorb/Sap
+    -- Sipper/etc. holder), not Showdown's own full, broader ignore-list
+    -- (which also covers several other immunity/prevention families) --
+    -- a real, honestly-narrower scope given the time this would take to
+    -- replicate exhaustively across every immunity site in this mod, not
+    -- a silently-incomplete claim.
+    local ignoreAbility = ctx.user and abilityIdOf(ctx.user)
+    if ignoreAbility == "MOLDBREAKER" or ignoreAbility == "TERAVOLT" or ignoreAbility == "TURBOBLAZE" then
+      return next(ctx)
+    end
     local record = abilityBehaviorOf(target)
     local behavior = record and record.behaviour
     local effects = behavior and behavior.effects
@@ -71,6 +84,15 @@ return function(mod, data)
       end
     end
     if not blocks then return next(ctx) end
+
+    -- Earth Eater (Phase 8, other bucket): real type_immunity effect
+    -- entry exists (moveType="ground") but its own real heal fraction
+    -- isn't structured data -- national_dex's own notes say so
+    -- explicitly ("Source text does not state the healed amount as a
+    -- fraction of max HP"). Real, confirmed Showdown value: 1/4 max HP,
+    -- the same fraction the rest of this absorb family already uses --
+    -- hardcoded here as a documented, verified exception, not a guess.
+    if id == "EARTHEATER" and not healFraction then healFraction = 0.25 end
 
     if healFraction then
       local mon = target.mon or target

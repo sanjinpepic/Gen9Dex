@@ -67,8 +67,10 @@ return function(mod, data)
     if not (battle and moveId and target and user and (ev.damage or 0) > 0) then return end
     local id = abilityIdOf(target)
     if not (id and data[id]) then return end
-    local flags = moveFlags(moveId)
-    if not (flags and flags.contact) then return end
+    -- Long Reach (Phase 7): the real "did this attacker's move make
+    -- contact" answer, ability-aware.
+    local makesContact = mod.exports.makesContact
+    if not (makesContact and makesContact(moveId, user)) then return end
     local gen2 = isGen2Battle(battle)
 
     if id == "CUTECHARM" then
@@ -167,19 +169,30 @@ return function(mod, data)
   -- WHO INFLICTED IT: neither of this mod's own status primitives
   -- threads the attacking battler through (opts.source is a move id
   -- string, not a battler reference -- confirmed, every real call site
-  -- in this codebase). This engine has exactly two battler slots today,
-  -- so "whoever isn't the Synchronize holder" is unambiguous -- the
-  -- same real, established 2-battler assumption combat/boss_fight_
-  -- status.lua's own hardStatus protection already relies on
-  -- (`target == battle.enemy` implying the attacker is battle.player).
-  -- Flagged here for the same reason: this breaks the moment a real
-  -- multi-battler format exists and needs revisiting then, not
-  -- something to solve with a guess now.
+  -- in this codebase), so the exact real inflicter can never be pinned
+  -- down precisely -- a genuine, permanent limitation, not something
+  -- N-way rework fixes. UPDATED 2026-08-28 (was a hardcoded 2-battler
+  -- pair, `(mon == battle.player) and battle.enemy or battle.player`):
+  -- now picks a REAL RANDOM opposing battler via requestAdjacency
+  -- (combat/move_targeting.lua) -- correct for the real two-battler case
+  -- (only one possible answer) and a defensible, real generalization for
+  -- a genuine multi-battler fight (some real opponent, not silently
+  -- always "whichever mon happens to be battle.enemy"). Works for both
+  -- engines uniformly: no battle-scene mod wraps the adjacency hook for
+  -- Gen 1 (g9-Battle-Scene, the one real multi-battler consumer, is
+  -- itself Gen 2-only), so a Gen 1 call always lands on the same native
+  -- two-battler fallback requestAdjacency already has built in.
   ------------------------------------------------------------------
   local SYNC_CANONICAL = { PSN = "poison", BRN = "burn", PAR = "paralysis", TOX = "poison" }
   local SYNC_CANONICAL_GEN2 = { poison = "poison", burn = "burn", paralyze = "paralysis", toxic = "toxic" }
   local function otherBattler(battle, mon)
-    return (mon == battle.player) and battle.enemy or battle.player
+    local requestAdjacency = mod.exports.requestAdjacency
+    if not requestAdjacency then
+      return (mon == battle.player) and battle.enemy or battle.player
+    end
+    local enemies = requestAdjacency(battle, mon, nil).enemies
+    if #enemies == 0 then return nil end
+    return enemies[love.math.random(1, #enemies)]
   end
 
   -- Reflection calls are tagged with a dedicated "synchronize" source

@@ -236,8 +236,16 @@ return function(mod)
   local SUN_SKIPS_CHARGE = { SOLARBEAM = true }
   local nativePerformMove = BattleState.performMove
   function BattleState:performMove(user, target, moveInst, isCalled)
+    -- Mega Sol (Phase 8, other bucket): real text is "can use its moves
+    -- AS IF the weather were harsh sunlight" -- broader than just the
+    -- Fire/Water damage multiplier (combat/modern_combat.lua's own real
+    -- weather modifier), so every other real sun-move interaction this
+    -- engine already models gets the same personal-only override,
+    -- checked alongside the real field weather rather than replacing it.
+    local abilityIdOf = mod.exports.abilityIdOf
+    local megaSol = user and abilityIdOf and abilityIdOf(user) == "MEGASOL"
     if moveInst and SUN_SKIPS_CHARGE[moveInst.id] and not isGen2Battle(self)
-        and currentWeather(self, false) == "SUN" then
+        and (currentWeather(self, false) == "SUN" or megaSol) then
       user.charging = moveInst
       user.chargeReady = true
     end
@@ -344,7 +352,7 @@ return function(mod)
       SANDFORCE = true, SANDRUSH = true, SANDVEIL = true, MAGICGUARD = true,
       OVERCOAT = true,
     }
-    for _, who in ipairs({ battle.player, battle.enemy }) do
+    for _, who in ipairs(mod.exports.allActiveBattlers and mod.exports.allActiveBattlers(battle) or { battle.player, battle.enemy }) do
       if who and who.mon and who.mon.hp > 0 and not who.invulnerable then
         local immune = false
         for _, t in ipairs(curTypesOf(who, false)) do

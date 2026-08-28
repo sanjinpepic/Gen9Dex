@@ -73,7 +73,22 @@ return function(mod, data)
   local nativeSwitchLocked = Battle.switchLocked
   function Battle:switchLocked()
     if nativeSwitchLocked(self) then return true end
-    return trapAbilityBlocks(self, self.enemy, self.player)
+    -- Real N-way check (2026-08-28): native switchLocked is itself
+    -- parameterless (always "is self.player trapped" -- the real
+    -- cartridge check has no concept of checking any other slot), so the
+    -- fix here is on the HOLDER side -- any currently active enemy-side
+    -- battler with a trap ability, not just literal self.enemy, can trap
+    -- self.player. mod.exports.allActiveBattlers (combat/move_targeting
+    -- .lua) is the real roster; falls back to the native pair if that
+    -- primitive somehow isn't loaded yet.
+    local allActiveBattlers = mod.exports.allActiveBattlers
+    local roster = allActiveBattlers and allActiveBattlers(self) or { self.player, self.enemy }
+    for _, holder in ipairs(roster) do
+      if self:sideOf(holder) == "enemy" and trapAbilityBlocks(self, holder, self.player) then
+        return true
+      end
+    end
+    return false
   end
 
   mod.log:info("g9-battle-engine-beta: trap_abilities installed (ARENATRAP, SHADOWTAG, MAGNETPULL, RUNAWAY -- Gen 2 only)")

@@ -92,9 +92,18 @@ return function(mod)
   ------------------------------------------------------------------
   -- hardStatus
   ------------------------------------------------------------------
+  -- Real N-way "is this the protected enemy side" check -- explicit user
+  -- request (2026-08-28): object identity against `battle.enemy` only
+  -- ever matched the FIRST enemy-side battler, silently leaving battler
+  -- #2/#3 unprotected in a real multi-enemy boss encounter (an add, not
+  -- just the boss itself). `battle:sideOf(mon) == "enemy"` uses the same
+  -- real N-way primitive (combat/move_targeting.lua) every other fix in
+  -- this pass now goes through -- generalizes "the boss is protected" to
+  -- "the whole enemy side is protected," the natural reading of a boss
+  -- fight that includes escorts, not a narrower one.
   local nativeStatusInflict = StatusRegistry.inflict
   StatusRegistry.inflict = function(battle, target, status, opts)
-    if battle and target == battle.enemy and bossFightHas(battle, "hardStatus") then
+    if battle and target and battle:sideOf(target) == "enemy" and bossFightHas(battle, "hardStatus") then
       return {}
     end
     return nativeStatusInflict(battle, target, status, opts)
@@ -102,7 +111,7 @@ return function(mod)
 
   local nativeApplyStatus = Battle.applyStatus
   function Battle:applyStatus(mon, status, source)
-    if mon == self.enemy and bossFightHas(self, "hardStatus") then
+    if mon and self:sideOf(mon) == "enemy" and bossFightHas(self, "hardStatus") then
       return
     end
     return nativeApplyStatus(self, mon, status, source)
@@ -124,7 +133,7 @@ return function(mod)
   mod.events:on("battle.damage_dealt", function(ev)
     local battle = ev and ev.battle
     local target = ev and ev.target
-    if not (battle and target and target == battle.enemy) then return end
+    if not (battle and target and battle:sideOf(target) == "enemy") then return end
     if bossFightHas(battle, "softStatus") then
       local gen2 = mod.exports.isGen2Battle and mod.exports.isGen2Battle(battle)
       if gen2 then
@@ -152,7 +161,7 @@ return function(mod)
     local move = ev and ev.move
     local dealt = ev and ev.damage
     if not (battle and target and user and move and dealt and dealt > 0) then return end
-    if target ~= battle.enemy or not bossFightHas(battle, "antiDrain") then return end
+    if battle:sideOf(target) ~= "enemy" or not bossFightHas(battle, "antiDrain") then return end
     local ok, info = pcall(moveById, move.id)
     local drainPercent = ok and info and (info.drain or 0) > 0 and info.drain or nil
     if not drainPercent then return end

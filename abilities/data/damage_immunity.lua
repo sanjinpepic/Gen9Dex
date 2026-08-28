@@ -38,4 +38,12 @@ return {
   STURDY = true, WONDERGUARD = true, BULLETPROOF = true, SOUNDPROOF = true,
   WINDRIDER = true, TELEPATHY = true, MAGICGUARD = true, HEATPROOF = true,
   SANDFORCE = true, SANDRUSH = true, SANDVEIL = true,
+  -- DISGUISE (Phase 7, prevent bucket): real damage-negation half only,
+  -- see abilities/engine/damage_immunity.lua's own header for the
+  -- honest form-change scope note.
+  DISGUISE = true,
+  -- ICEFACE (Phase 8, other bucket, added 2026-08-28): same real
+  -- shape, PHYSICAL-hit-only, resets in Snow -- see this file's own
+  -- engine header for the exact real differences from Disguise.
+  ICEFACE = true,
 }

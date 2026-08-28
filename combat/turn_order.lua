@@ -268,6 +268,40 @@ return function(mod)
   end
 
   ------------------------------------------------------------------
+  -- mod.exports.orderActiveBattlers(battle, battlers) -> orderedBattlers
+  -- The real N-way generalization of orderSwitchInMons above, explicit
+  -- user request (2026-08-28): the fixed player-then-enemy switch-in
+  -- ordering pattern every switch-in ability engine in this mod used
+  -- (`local first, second = battle.player, battle.enemy; if order then
+  -- ... end`) only ever covered exactly two simultaneous switch-ins --
+  -- real Showdown doubles/triples resolves a whole LEAD of 4-6
+  -- simultaneously-entering Pokemon in fastest-first application order,
+  -- same rule, just more than two actors. Reuses computeTurnOrder
+  -- directly (already asymmetric-ready by construction, this file's own
+  -- header) rather than a parallel N-way comparator -- same fastest-
+  -- first APPLICATION order convention orderSwitchInMons already
+  -- established (the LAST battler returned is the one that "wins" any
+  -- exclusive, overwrite-shaped shared state, e.g. weather/terrain).
+  ------------------------------------------------------------------
+  mod.exports.orderActiveBattlers = function(battle, battlers)
+    if not (battle and type(battlers) == "table") then return battlers or {} end
+    local actors, byId = {}, {}
+    for i, mon in ipairs(battlers) do
+      if mon then
+        local actor = { id = i, priority = 0, speed = battle:effectiveSpeed(mon) }
+        actors[#actors + 1] = actor
+        byId[i] = mon
+      end
+    end
+    local ordered = computeTurnOrder(actors, { trickRoom = false, roller = battle:roller() })
+    local result = {}
+    for i, entry in ipairs(ordered) do
+      result[i] = byId[entry.id]
+    end
+    return result
+  end
+
+  ------------------------------------------------------------------
   -- mod.exports.resolveTurnActions(battle, actingBattlers) -- the real
   -- multi-battler integration seam MULTI_BATTLE_HOOKS.md specs and this
   -- was, until now, "not yet built." A caller (a multi-battler combat

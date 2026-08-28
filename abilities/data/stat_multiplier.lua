@@ -55,9 +55,20 @@
 -- `ANY_STATUS_COND` bucket in this file's own engine (any major status,
 -- not one specific one -- the one real difference from Flare Boost/Toxic
 -- Boost's single-status shape).
+-- PROTOSYNTHESIS / QUARK DRIVE (Phase 8, other bucket, added
+-- 2026-08-28): a genuinely different shape from every ability above --
+-- national_dex's own record for both carries NO structured
+-- stat_multiplier effect at all (the boosted stat is chosen
+-- DYNAMICALLY, "whichever of the five is currently highest," not a
+-- fixed stat+factor pair this file's own statMultiplierFor could read
+-- generically) -- so both are handled by dedicated code in the engine
+-- file instead, reusing the exact same Battle:battleStat choke point.
+-- Booster Energy (the real item-triggered alternative to weather/
+-- terrain) isn't built -- this ROM's own item roster has no such item.
 return {
   CHLOROPHYLL = true, SWIFTSWIM = true, SANDRUSH = true, SLUSHRUSH = true,
   SOLARPOWER = true, SURGESURFER = true, DEFEATIST = true, FLAREBOOST = true,
   TOXICBOOST = true, ORICHALCUMPULSE = true, HUGEPOWER = true,
   PUREPOWER = true, GORILLATACTICS = true, QUICKFEET = true,
+  PROTOSYNTHESIS = true, QUARKDRIVE = true,
 }

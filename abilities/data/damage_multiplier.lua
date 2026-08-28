@@ -4,13 +4,14 @@
 -- national_dex's own abilityById, read live by abilities/engine/
 -- damage_multiplier.lua, never copied into this file.
 --
+-- Battery, Power Spot, Friend Guard, Steely Spirit (2026-08-28): this
+-- header used to mark all four as blocked pending a future multi-
+-- battler mod -- stale, that support has since landed
+-- (requestAdjacency's own real .allies list). All four now genuinely
+-- built, in this same engine file, right alongside the rest.
+--
 -- Explicitly NOT here, still deferred with a reason (not silently
 -- dropped) -- see that engine file's own header for the full breakdown:
---   Battery, Power Spot, Friend Guard, Steely Spirit -- scope="allies",
---     same "no ally slot exists" structural exemption Round already got
---     -- blocked pending the future multi-battler mod (real, committed
---     project scope, just not wired into this engine yet), not
---     permanently moot.
 --   Flash Fire, Aerilate, Pixilate, Galvanize, Refrigerate -- each needs
 --     a move-TYPE override primitive this mod doesn't have yet (the
 --     existing type_override_primitives.lua changes a MON's own type,
@@ -28,7 +29,7 @@ return {
   ADAPTABILITY = true, STEELWORKER = true, ROCKYPAYLOAD = true,
   TRANSISTOR = true, FIREMANE = true, DRAGONSMAW = true,
   BLAZE = true, OVERGROW = true, TORRENT = true, SWARM = true,
-  TECHNICIAN = true, SANDFORCE = true, DARKAURA = true, FAIRYAURA = true,
+  TECHNICIAN = true, SANDFORCE = true, DARKAURA = true, FAIRYAURA = true, AURABREAK = true,
   WATERBUBBLE = true, RIVALRY = true,
   THICKFAT = true, PURIFYINGSALT = true, MULTISCALE = true, SHADOWSHIELD = true,
   NEUROFORCE = true, TINTEDLENS = true, FILTER = true, SOLIDROCK = true,
@@ -46,4 +47,6 @@ return {
   FURCOAT = true, ICESCALES = true, HUSTLE = true,
   ELECTROMORPHOSIS = true, WINDPOWER = true, STAKEOUT = true,
   SHEERFORCE = true,
+  -- Ally-scope, un-deferred 2026-08-28 -- see this file's own header.
+  BATTERY = true, POWERSPOT = true, FRIENDGUARD = true, STEELYSPIRIT = true,
 }

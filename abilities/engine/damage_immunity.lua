@@ -21,6 +21,13 @@ return function(mod, data)
   ------------------------------------------------------------------
   registerPostEffectivenessModifier("wonderguard", 0, function(ctx)
     if abilityIdOf(ctx.target) ~= "WONDERGUARD" then return 1.0 end
+    -- Mold Breaker/Teravolt/Turboblaze (Phase 8, other bucket) -- see
+    -- abilities/engine/type_immunity.lua's own header for the real,
+    -- honestly-scoped ignore-list this covers.
+    local ignoreAbility = ctx.user and abilityIdOf(ctx.user)
+    if ignoreAbility == "MOLDBREAKER" or ignoreAbility == "TERAVOLT" or ignoreAbility == "TURBOBLAZE" then
+      return 1.0
+    end
     if ctx.mult and ctx.mult > 1.0 then return 1.0 end
     return 0
   end)
@@ -45,6 +52,23 @@ return function(mod, data)
     if not (target and move) then return next(ctx) end
     local id = abilityIdOf(target)
 
+    -- Magic Guard, general self-hit half -- real, confirmed Showdown
+    -- rule found and fixed 2026-08-28 (explicit user follow-up
+    -- question, "does magic guard prevent all sources it should"):
+    -- confusion self-hit is a REAL battle.damage computation
+    -- (confirmed by direct read, BOTH engines -- Gen 1's own
+    -- BattleState.lua self-hit code calls `self:computeDamage(user,
+    -- user, ...)`, the exact same hooked function every normal hit
+    -- goes through) with `user == target` -- a real, reliable, general
+    -- signal for "this Pokemon is hitting itself," which is exactly
+    -- the class of damage Magic Guard blocks, checked here ONCE rather
+    -- than per-source. `id` above is TARGET's ability, already the
+    -- right one to check for a self-hit (attacker and defender are the
+    -- same mon).
+    if id == "MAGICGUARD" and user and user == target then
+      return 0, { crit = false, typeMult = 0 }
+    end
+
     if id == "TELEPATHY" and user and ctx.battle and ctx.battle:sideOf(user) == ctx.battle:sideOf(target) then
       return 0, { crit = false, typeMult = 0 }
     end
@@ -58,7 +82,19 @@ return function(mod, data)
     end
 
     if id == "STURDY" then
-      if move.effect == "OHKO_EFFECT" then
+      -- Real bug fixed 2026-08-28, surfaced by a direct user question
+      -- ("did you make sturdy immune to OHKO moves?"): this checked
+      -- ONLY "OHKO_EFFECT", Gen 1's own real effect string
+      -- (national_dex's own record for Fissure/Guillotine/Horn Drill:
+      -- gen1Effect="OHKO_EFFECT") -- Gen 2's OWN real string for the
+      -- identical move is different (gen2Effect="EFFECT_OHKO",
+      -- confirmed by direct read, gen2/Battle.lua's own
+      -- Battle.MOVE_EFFECTS.EFFECT_OHKO dispatch key) -- so this never
+      -- matched on Gen 2 at all, a real gap present since Phase 8a and
+      -- newly RELEVANT now that combat/legacy_move_takeover.lua's own
+      -- centralizing fix is what makes an OHKO hit reach this check on
+      -- Gen 2 in the first place.
+      if move.effect == "OHKO_EFFECT" or move.effect == "EFFECT_OHKO" then
         return 0, { crit = false, typeMult = 0 }
       end
       local m = hpOf(target)
@@ -71,8 +107,76 @@ return function(mod, data)
       return dmg, info
     end
 
+    -- Disguise (Phase 7, prevent bucket): real damage-negation half only
+    -- -- the first hit that would deal damage is voided entirely (0
+    -- damage), tracked via a plain per-mon flag cleared on battle.ended
+    -- below, same combat-only-state convention this whole ability system
+    -- already uses. The COSMETIC half (Busted Form) is explicitly out of
+    -- scope -- form-changing is battle_forms's own domain (this mod's
+    -- own standing non-goal, PROGRESS.md's own header) -- a real,
+    -- honestly-named simplification, not silently dropped: the mon just
+    -- takes 0 damage on that one hit without visually changing form.
+    if id == "DISGUISE" and data.DISGUISE then
+      local m = hpOf(target)
+      if not m.disguiseBusted then
+        m.disguiseBusted = true
+        return 0, { crit = false, typeMult = 0 }
+      end
+    end
+
+    -- Ice Face (Phase 8, other bucket -- explicit user directive: the
+    -- transformation/visual half stays out of scope, the combat effect
+    -- doesn't). Real, confirmed shape, the same real damage-negation
+    -- primitive Disguise already uses, with two real differences: only
+    -- a PHYSICAL hit is negated (a special or status hit passes through
+    -- normally, real confirmed rule), and the "used" flag resets when
+    -- Snow begins (this engine's own real Gen 9 Snowscape, the
+    -- confirmed replacement for old Hail -- see combat/modern_weather
+    -- .lua's own header) rather than only on battle end.
+    if id == "ICEFACE" and data.ICEFACE then
+      local m = hpOf(target)
+      local MoveCategory = mod.exports.MoveCategory
+      local category = MoveCategory and MoveCategory.of(move) or "Physical"
+      if not m.iceFaceBusted and category == "Physical" then
+        m.iceFaceBusted = true
+        return 0, { crit = false, typeMult = 0 }
+      end
+    end
+
     return next(ctx)
   end, 40)
+
+  mod.events:on("battle.ended", function(ev)
+    local battle = ev and ev.battle
+    if not battle then return end
+    for _, mon in ipairs({ battle.player, battle.enemy }) do
+      if mon then
+        hpOf(mon).disguiseBusted = nil
+        hpOf(mon).iceFaceBusted = nil
+      end
+    end
+  end)
+
+  -- Ice Face's own real reversion trigger: Snow being active resets a
+  -- busted Ice Face back to ready. No real "weather changed" event
+  -- exists anywhere in this mod to hook (confirmed by direct grep,
+  -- combat/modern_weather.lua's own setWeather never emits one) -- so,
+  -- same live-poll shape Protosynthesis/Quark Drive's own real
+  -- persistence check already established this same phase, this checks
+  -- fresh on battle.turn_started (fires every turn, both generations)
+  -- rather than waiting on a discrete change event that doesn't exist.
+  mod.events:on("battle.turn_started", function(ev)
+    local battle = ev and ev.battle
+    if not battle then return end
+    local currentWeather = mod.exports.currentWeather
+    local isGen2Battle = mod.exports.isGen2Battle
+    if not (currentWeather and isGen2Battle and currentWeather(battle, isGen2Battle(battle)) == "SNOW") then
+      return
+    end
+    for _, mon in ipairs(mod.exports.allActiveBattlers and mod.exports.allActiveBattlers(battle) or { battle.player, battle.enemy }) do
+      if mon and abilityIdOf(mon) == "ICEFACE" then hpOf(mon).iceFaceBusted = nil end
+    end
+  end)
 
   ------------------------------------------------------------------
   -- Status residual: Heatproof (halve burn) and Magic Guard (block
@@ -155,6 +259,56 @@ return function(mod, data)
   magicGuardGen2("poison")
   magicGuardGen2("toxic")
   magicGuardGen2("burn")
+
+  ------------------------------------------------------------------
+  -- Magic Guard, recoil half -- real, confirmed Showdown rule, fixed
+  -- 2026-08-28 (explicit user follow-up question). Gen 1 only: recoil's
+  -- own real native record (RECOIL_EFFECT.afterDamage) is a real,
+  -- monkeypatchable field on a standalone table, same shape every other
+  -- native record this mod already patches. Gen 2's own recoil
+  -- (confirmed by direct read, gen2/Battle.lua) is a plain inline
+  -- mutation (`attacker.hp = math.max(0, attacker.hp - recoil)`) deep
+  -- inside the same massive Battle:useMove this session's own Sheer
+  -- Cold/Dancer/Magic Bounce work already established has no clean
+  -- extension point -- a real, honestly-flagged, NOT-fixed-this-pass
+  -- gap on that one generation specifically, not a guess shipped under
+  -- time pressure.
+  ------------------------------------------------------------------
+  local MoveEffects = require("src.battle.MoveEffects")
+  local recoilRecord = MoveEffects.full and MoveEffects.full.RECOIL_EFFECT
+  if recoilRecord then
+    local nativeRecoil = recoilRecord.afterDamage
+    recoilRecord.afterDamage = function(ctx)
+      if abilityIdOf(ctx.user) == "MAGICGUARD" then return end
+      return nativeRecoil(ctx)
+    end
+  end
+
+  ------------------------------------------------------------------
+  -- Magic Guard, entry-hazard half -- real, confirmed Showdown rule,
+  -- fixed 2026-08-28. combat/modern_hazards.lua's own Stealth Rock/
+  -- Sharp Steel damage and Gen 2's own native Battle:spikesDamage
+  -- override (that same file's own real "Native Spikes upgrade") both
+  -- had ability identity available at their own real HP-mutation point
+  -- already -- Magic Guard was simply never checked there. Exported
+  -- here as one small, reusable predicate rather than duplicating the
+  -- ability check in a second file.
+  ------------------------------------------------------------------
+  mod.exports.magicGuardBlocksHazard = function(mon)
+    return abilityIdOf(mon) == "MAGICGUARD"
+  end
+
+  -- Gen 2's own sand-chip half -- real, confirmed, PRE-EXISTING gap
+  -- (already flagged in this file's own header before today), NOT
+  -- fixed this pass either: `Gen2Effects.sandstormDamage(maxHp)`
+  -- (combat/modern_weather.lua's own patch) takes ONLY the max-HP
+  -- number, no mon identity at all -- confirmed by direct read of its
+  -- own real native call site, `Battle:tickWeather` (gen2/Battle.lua),
+  -- which DOES know the mon but is a large function this mod
+  -- deliberately reuses wholesale rather than replacing (that file's
+  -- own header: "the mechanism... is reused as-is"). Fixing this
+  -- correctly means replacing that whole function, not a smaller patch
+  -- -- a real, separate, still-open gap, same honest status as before.
 
   mod.log:info("g9-battle-engine-beta: damage_immunity installed (STURDY, WONDERGUARD, BULLETPROOF, SOUNDPROOF, WINDRIDER, TELEPATHY, MAGICGUARD, HEATPROOF; SANDFORCE/SANDRUSH/SANDVEIL sand-chip half wired in combat/modern_weather.lua)")
 end

@@ -80,8 +80,11 @@ return function(mod)
     -- terrain -- the player's side is refused outright (returns false,
     -- same "no-op" shape as the already-this-terrain case above), mirroring
     -- weather's own boss-lock tier in modern_combat.lua's canSetWeather.
+    -- Real N-way check (2026-08-28): any enemy-side battler authorized,
+    -- not just the literal battle.enemy object -- same generalization
+    -- modern_combat.lua's own canSetWeather fix uses.
     local bossLocking = mod.exports.bossFightHas and mod.exports.bossFightHas(battle, "mistyTerrain")
-    if bossLocking and setter ~= battle.enemy then return false end
+    if bossLocking and battle:sideOf(setter) ~= "enemy" then return false end
     battle.terrain = key
     battle.terrainTurns = resolveFieldDuration(setter, FIELD_BASE_TURNS,
       FIELD_EXTENDED_TURNS, TERRAIN_EXTEND_ITEM)
@@ -91,7 +94,7 @@ return function(mod)
     -- nothing else in this file ever clears terrain except the turnTurns
     -- countdown itself, and math.huge never reaches it (Lua's own
     -- math.huge - 1 == math.huge).
-    if bossLocking and setter == battle.enemy then
+    if bossLocking and battle:sideOf(setter) == "enemy" then
       battle.terrainTurns = math.huge
       battle.terrainBossLocked = true
     end
@@ -152,7 +155,7 @@ return function(mod)
     if not battle or not battle.terrain then return end
 
     if battle.terrain == "GRASSY" then
-      for _, mon in ipairs({ battle.player, battle.enemy }) do
+      for _, mon in ipairs(mod.exports.allActiveBattlers and mod.exports.allActiveBattlers(battle) or { battle.player, battle.enemy }) do
         if mon and (mon.hp or 0) > 0 and affectedByTerrain(battle, mon) then
           local maxHp = mon.maxHp or (mon.stats and mon.stats.hp) or mon.hp
           if mon.hp < maxHp then

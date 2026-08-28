@@ -101,7 +101,7 @@ return function(mod, data)
   mod.events:on("battle.turn_ended", function(ev)
     local battle = ev and ev.battle
     if not battle then return end
-    for _, mon in ipairs({ battle.player, battle.enemy }) do
+    for _, mon in ipairs(mod.exports.allActiveBattlers and mod.exports.allActiveBattlers(battle) or { battle.player, battle.enemy }) do
       if mon and (mon.hp or 0) > 0 then applyTurnEndWeather(battle, mon) end
     end
   end)

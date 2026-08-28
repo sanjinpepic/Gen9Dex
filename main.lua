@@ -297,6 +297,20 @@ local function installMovepoolEffects(mod)
       if secondarySuppressed then
         flinchChance, confuseChance, ailmentChance, statChance = nil, nil, nil, nil
       end
+      -- Phase 8: Serene Grace -- doubles the SAME real secondary-effect
+      -- pool this listener already owns (flinch/ailment/confuse/stat-
+      -- change), the attacking side, capped at 100 so a doubled 60%+
+      -- chance never rolls against an out-of-range denominator. Real,
+      -- confirmed exclusion (Showdown source + national_dex's own notes):
+      -- Secret Power's own terrain-dependent secondary is explicitly
+      -- unaffected -- excluded by move id rather than guessed silently
+      -- correct.
+      if abilityIdOf and user and moveId ~= "SECRETPOWER" and abilityIdOf(user) == "SERENEGRACE" then
+        if flinchChance then flinchChance = math.min(100, flinchChance * 2) end
+        if confuseChance then confuseChance = math.min(100, confuseChance * 2) end
+        if ailmentChance then ailmentChance = math.min(100, ailmentChance * 2) end
+        if statChance then statChance = math.min(100, statChance * 2) end
+      end
       if flinchChance and percentRoll(flinchChance)
           and not (hasStatusImmunity and hasStatusImmunity(target, "flinch", battle)) then
         if gen2 then
@@ -616,6 +630,11 @@ local CUSTOM_EFFECT_PATCH = {
   STEALTHROCK = "GALAR_STEALTHROCK_EFFECT",
   TOXICSPIKES = "GALAR_TOXICSPIKES_EFFECT",
   STICKYWEB = "GALAR_STICKYWEB_EFFECT",
+  -- combat/modern_ability_change_moves.lua
+  SKILLSWAP = "GALAR_SKILLSWAP_EFFECT",
+  WORRYSEED = "GALAR_WORRYSEED_EFFECT",
+  ENTRAINMENT = "GALAR_ENTRAINMENT_EFFECT",
+  GASTROACID = "GALAR_GASTROACID_EFFECT",
   -- combat/modern_movepool_stages.lua -- primary() (pure status moves)
   AROMATICMIST = "GMAX_AROMATICMIST_EFFECT",
   BULKUP = "GMAX_BULKUP_EFFECT",
@@ -1475,8 +1494,25 @@ return function(mod)
   local installAbilityDispatch = loadSibling(mod, "abilities/ability_dispatch.lua")
   installAbilityDispatch(mod)
 
+  -- Interaction memory (recordInteraction/lastInteractionAgainst) --
+  -- explicit user design, the real primitive Mirror Armor (Phase 8,
+  -- other bucket) needs without threading a new parameter through
+  -- changeStage's own signature. Sits here, ahead of modern_combat.lua,
+  -- so changeStage's own Mirror Armor check and every recorder below
+  -- can capture it as a plain local.
+  local installInteractionMemory = loadSibling(mod, "combat/interaction_memory.lua")
+  installInteractionMemory(mod)
+
   local installModernCombat = loadSibling(mod, "combat/modern_combat.lua")
   installModernCombat(mod)
+
+  -- Legacy move takeover -- explicit user directive: classic fixed-
+  -- damage/OHKO moves must route through the same battle.damage hook
+  -- chain every other move already does, not bypass it. No dependency
+  -- on any other file in this mod (works via native monkeypatch +
+  -- Runtime.call directly), so it's safe to install this early.
+  local installLegacyMoveTakeover = loadSibling(mod, "combat/legacy_move_takeover.lua")
+  installLegacyMoveTakeover(mod)
 
   -- Move targeting resolver -- moved up here (ahead of ANY switch_in
   -- ability engine) because abilities/engine/switchin_stat_change.lua's
@@ -1548,6 +1584,19 @@ return function(mod)
   local typeImmunityData = loadSibling(mod, "abilities/data/type_immunity.lua")
   local installTypeImmunity = loadSibling(mod, "abilities/engine/type_immunity.lua")
   installTypeImmunity(mod, typeImmunityData)
+
+  -- Gym Badge Buff (combat/gym_badge_buff.lua) -- loads BEFORE
+  -- stat_multiplier.lua below, on purpose: real Gold/Silver badge boosts
+  -- are intrinsic to the party's own stat value (a cartridge-level bonus,
+  -- not a Gen 3+ ability multiplier), so this needs to be the INNERMOST
+  -- Battle:battleStat layer -- applied first, to the raw stat -- with
+  -- ability multipliers composing on TOP of the badge-boosted number
+  -- once stat_multiplier.lua wraps this file's own already-wrapped
+  -- version next. Reversing this order would apply an ability multiplier
+  -- to the un-boosted stat, then a flat badge bonus on top of THAT
+  -- already-multiplied number -- the wrong layering.
+  local installGymBadgeBuff = loadSibling(mod, "combat/gym_badge_buff.lua")
+  installGymBadgeBuff(mod)
 
   -- Phase 4 of the ability roadmap: stat_multiplier. Loads after
   -- status_immunity.lua (reuses its canonicalStatusOf for Flare Boost/
@@ -1768,6 +1817,43 @@ return function(mod)
   local installPreventMisc = loadSibling(mod, "abilities/engine/prevent_misc.lua")
   installPreventMisc(mod, preventMiscData)
 
+  -- Phase 7 completion pass (2026-08-28): AROMAVEIL, GOODASGOLD, KLUTZ/
+  -- LONGREACH/STICKYHOLD/UNNERVE-family (all wired directly into their
+  -- own real primitive's file -- modern_items.lua, contact_retaliation
+  -- .lua, ability_copy.lua, inflict_status.lua -- no separate install
+  -- call needed), DISGUISE (abilities/data/damage_immunity.lua, already
+  -- installed above). STALWART confirmed a real no-op (no move-
+  -- redirection mechanic exists anywhere in this engine).
+  local aromaVeilData = loadSibling(mod, "abilities/data/aroma_veil.lua")
+  local installAromaVeil = loadSibling(mod, "abilities/engine/aroma_veil.lua")
+  installAromaVeil(mod, aromaVeilData)
+
+  local goodAsGoldData = loadSibling(mod, "abilities/data/good_as_gold.lua")
+  local installGoodAsGold = loadSibling(mod, "abilities/engine/good_as_gold.lua")
+  installGoodAsGold(mod, goodAsGoldData)
+
+  local longReachData = loadSibling(mod, "abilities/data/long_reach.lua")
+  local installLongReach = loadSibling(mod, "abilities/engine/long_reach.lua")
+  installLongReach(mod, longReachData)
+
+  -- Phase 8 (`other` bucket) -- first real batch after Phase 7. Pressure
+  -- needs national_dex's own moveById (loaded first thing) and
+  -- ability_dispatch.lua's abilityIdOf (loaded well above); ability_copy
+  -- additionally needs setAbility (same file) and turn_order.lua's
+  -- orderSwitchInMons (also already loaded); the ability-changing MOVES
+  -- need setAbility too, plus this file's own normalize/displayNameFor
+  -- exports.
+  local pressureData = loadSibling(mod, "abilities/data/pressure.lua")
+  local installPressure = loadSibling(mod, "abilities/engine/pressure.lua")
+  installPressure(mod, pressureData)
+
+  local abilityCopyData = loadSibling(mod, "abilities/data/ability_copy.lua")
+  local installAbilityCopy = loadSibling(mod, "abilities/engine/ability_copy.lua")
+  installAbilityCopy(mod, abilityCopyData)
+
+  local installAbilityChangeMoves = loadSibling(mod, "combat/modern_ability_change_moves.lua")
+  installAbilityChangeMoves(mod)
+
   -- Self-switch moves (U-turn, Volt Switch) -- consumes
   -- mod.exports.requestSwitch, installed above; see
   -- combat/modern_switch_moves.lua's own header for why this wraps
@@ -1848,6 +1934,86 @@ return function(mod)
   -- modern_combat.lua load-order requirement as modern_hazards.lua above.
   local installModernItems = loadSibling(mod, "combat/modern_items.lua")
   installModernItems(mod)
+
+  -- Phase 8 ("other" bucket): Skill Link -- Gen 1 only, see that file's
+  -- own header for the real scope split.
+  local skillLinkData = loadSibling(mod, "abilities/data/skill_link.lua")
+  local installSkillLink = loadSibling(mod, "abilities/engine/skill_link.lua")
+  installSkillLink(mod, skillLinkData)
+
+  -- Phase 8 ("other" bucket), consolidated batch: Bad Dreams, Cursed
+  -- Body, Anticipation, Forewarn, Wonder Skin, Screen Cleaner, Toxic
+  -- Debris. Needs modern_hazards.lua's own hazardsFor export (Toxic
+  -- Debris) and accuracy_multiplier.lua's own registerAccuracyModifier
+  -- export (Wonder Skin), both already loaded above.
+  local otherMiscData = loadSibling(mod, "abilities/data/other_misc.lua")
+  local installOtherMisc = loadSibling(mod, "abilities/engine/other_misc.lua")
+  installOtherMisc(mod, otherMiscData)
+
+  -- Phase 8 ("other" bucket): the item-interaction family (Frisk,
+  -- Magician, Pickpocket, Harvest) -- Ripen/Cheek Pouch are built
+  -- directly inside modern_items.lua itself, see that file's own header.
+  -- Needs modern_items.lua's own itemOf/isUnremovable exports (just
+  -- above) and long_reach.lua's own makesContact export (loaded earlier
+  -- in Phase 7's own batch).
+  local itemInteractionData = loadSibling(mod, "abilities/data/item_interaction.lua")
+  local installItemInteraction = loadSibling(mod, "abilities/engine/item_interaction.lua")
+  installItemInteraction(mod, itemInteractionData)
+
+  -- Phase 8 ("other" bucket): the switch/priority family (Download,
+  -- Moody, Curious Medicine, Costar, Beast Boost, Supreme Overlord,
+  -- Stall, Quick Draw). Needs modern_combat.lua's own newly-exported
+  -- stagesFor/sideOfWho/rawStat (this batch's own additions, right
+  -- alongside changeStage/registerDamageModifier) and turn_order.lua's
+  -- registerPriorityModifier.
+  local switchPriorityMiscData = loadSibling(mod, "abilities/data/switch_priority_misc.lua")
+  local installSwitchPriorityMisc = loadSibling(mod, "abilities/engine/switch_priority_misc.lua")
+  installSwitchPriorityMisc(mod, switchPriorityMiscData)
+
+  -- Phase 8 ("other" bucket), a small second batch: Perish Body, Punk
+  -- Rock.
+  local otherMisc2Data = loadSibling(mod, "abilities/data/other_misc2.lua")
+  local installOtherMisc2 = loadSibling(mod, "abilities/engine/other_misc2.lua")
+  installOtherMisc2(mod, otherMisc2Data)
+
+  -- Phase 8 ("other" bucket), continuing into the previously-deferred
+  -- complex remainder per explicit user direction (out-of-scope items
+  -- confirmed: form-changing abilities and single-species gimmicks,
+  -- both owned by battle_forms).
+  local truantData = loadSibling(mod, "abilities/data/truant.lua")
+  local installTruant = loadSibling(mod, "abilities/engine/truant.lua")
+  installTruant(mod, truantData)
+
+  local magicBounceData = loadSibling(mod, "abilities/data/magic_bounce.lua")
+  local installMagicBounce = loadSibling(mod, "abilities/engine/magic_bounce.lua")
+  installMagicBounce(mod, magicBounceData)
+
+  local dancerData = loadSibling(mod, "abilities/data/dancer.lua")
+  local installDancer = loadSibling(mod, "abilities/engine/dancer.lua")
+  installDancer(mod, dancerData)
+
+  local emergencyExitData = loadSibling(mod, "abilities/data/emergency_exit.lua")
+  local installEmergencyExit = loadSibling(mod, "abilities/engine/emergency_exit.lua")
+  installEmergencyExit(mod, emergencyExitData)
+
+  local typeOverrideMovesData = loadSibling(mod, "abilities/data/type_override_moves.lua")
+  local installTypeOverrideMoves = loadSibling(mod, "abilities/engine/type_override_moves.lua")
+  installTypeOverrideMoves(mod, typeOverrideMovesData)
+
+  -- Parental Bond -- wraps battle.damage at a priority ABOVE
+  -- type_override_moves.lua's own 200, so each of its two independent
+  -- hits re-enters that wrap (and everything else below it) on its own.
+  local parentalBondData = loadSibling(mod, "abilities/data/parental_bond.lua")
+  local installParentalBond = loadSibling(mod, "abilities/engine/parental_bond.lua")
+  installParentalBond(mod, parentalBondData)
+
+  -- Form-changing abilities' own real combat effects, transformation
+  -- side explicitly out of scope (explicit user directive). Needs
+  -- combat/modern_tera.lua, type_override_primitives.lua, modern_items
+  -- .lua, and modern_terrain.lua, all already loaded above.
+  local formCombatEffectsData = loadSibling(mod, "abilities/data/form_combat_effects.lua")
+  local installFormCombatEffects = loadSibling(mod, "abilities/engine/form_combat_effects.lua")
+  installFormCombatEffects(mod, formCombatEffectsData)
 
   -- Shared theme/panel primitives (colors, panel(), printText(), cursor,
   -- HP bar) -- one module so battle and every menu screen below read as

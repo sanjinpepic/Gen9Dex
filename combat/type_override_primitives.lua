@@ -202,7 +202,10 @@ return function(mod)
       -- for free; the boss's own self-activated kit (Protean, Color
       -- Change, a self-targeted Conversion) never sets viaOpponent, so it
       -- stays unaffected without any extra check needed.
-      if mon == battle.enemy and mod.exports.bossFightHas
+      -- Real N-way check (2026-08-28): any enemy-side battler protected,
+      -- not just the literal battle.enemy object -- same generalization
+      -- boss_fight_status.lua's own fix uses.
+      if mon and battle:sideOf(mon) == "enemy" and mod.exports.bossFightHas
           and mod.exports.bossFightHas(battle, "type") then
         return false
       end

@@ -132,7 +132,19 @@ return function(mod)
 
     labelValue("ABILITY", mon.ability, 16)
     labelValue("NATURE", mon.nature, 27)
-    labelValue("TERA", mon.teraType, 38)
+    -- Real fix, explicit user request: raw mon.teraType reads whatever
+    -- happens to already be stored, which for a mon that has never
+    -- Terastallized (its own storage's only prior writer, combat/
+    -- modern_tera.lua, gated on mon.teraActive -- itself currently inert,
+    -- see that file's own header) is always nil, showing blank here even
+    -- though a real initial type is defined. mod.exports.getTeraType(mon)
+    -- is the same lazy-roll-then-persist function that writer already
+    -- used -- calling it here (self-heals into mon.teraType permanently,
+    -- so this same call is also what SAVES the initial roll, satisfying
+    -- "not only on Terastallize") means simply opening this screen is now
+    -- enough to both roll AND persist the real initial type.
+    local teraType = mod.exports.getTeraType and mod.exports.getTeraType(mon)
+    labelValue("TERA", teraType, 38)
     -- Same fix as modern_stats_screen.lua: Dynamax Level is per-save, not
     -- per-mon (dynamax_state.lua's own storage contract) -- mon.dynamaxLevel
     -- never actually exists as a field.

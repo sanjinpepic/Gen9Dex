@@ -9,7 +9,14 @@
 --
 --   LEECH SEED: 1/8 the SEEDED mon's own max HP drained each turn,
 --     healed to the ORIGINAL SEEDER (not necessarily whoever's
---     currently opposite) -- Grass-type immune (onTryImmunity).
+--     currently opposite) -- Grass-type immune (onTryImmunity). UPDATED
+--     2026-08-28 (explicit user directive, re-verified against
+--     gen2/moves.ts's own real condition object this same pass): no
+--     drain at all once the seeder has fainted (confirmed, not just "no
+--     heal") -- this file's own code already had that part right;
+--     Magic Guard blocking the drain, Liquid Ooze reversing the heal
+--     into damage for the seeder, and a real Substitute block on
+--     infliction were all real, confirmed gaps, fixed below.
 --   NIGHTMARE: only begins while asleep; 1/4 max HP each turn. No
 --     explicit removal trigger in the real condition itself -- gated
 --     here on "still asleep" each tick (a reasonable reading, not
@@ -47,15 +54,16 @@
 --     used.
 --   FORESIGHT / MIRACLE EYE / ODOR SLEUTH: negates the target's own
 --     Ghost-type immunity to Normal/Fighting (Foresight/Odor Sleuth) or
---     Dark-type immunity to Psychic (Miracle Eye) -- built as a real
---     type-effectiveness override via registerPostEffectivenessModifier,
---     the same primitive Phase 2's Wonder Guard/Tinted Lens family
---     already uses. The real "also cancels target's evasion boost"
---     half is NOT built (would need an onModifyBoost-shaped hook this
---     engine doesn't have) -- flagged, not silently dropped.
+--     Dark-type immunity to Psychic (Miracle Eye) -- the mon-flag write
+--     lives here; the real negation itself is resolved in combat/
+--     modern_combat.lua's own resolvedTypeMult (moved there 2026-08-28,
+--     see this file's own comment just above the old registration site
+--     for why the original registerPostEffectivenessModifier shape was
+--     genuinely unreachable dead code). The real "also cancels target's
+--     evasion boost" half IS built (see markImmunityNegated below).
 --   SMACK DOWN / THOUSAND ARROWS: negates the target's natural Flying-
---     type immunity to Ground moves -- built the same way (post-
---     effectiveness override). Real full mechanic also interacts with
+--     type immunity to Ground moves -- same real mechanism (resolvedTypeMult).
+--     Real full mechanic also interacts with
 --     Levitate/Magnet Rise/Telekinesis/Fly-Bounce-in-progress/Gravity,
 --     none of which exist as primitives in this engine yet -- this
 --     covers the one real, always-relevant case (Flying-type immunity)
@@ -113,17 +121,47 @@ return function(mod)
   mod.events:on("battle.turn_ended", function(ev)
     local battle = ev and ev.battle
     if not battle then return end
-    for _, mon in ipairs({ battle.player, battle.enemy }) do
+    for _, mon in ipairs(mod.exports.allActiveBattlers and mod.exports.allActiveBattlers(battle) or { battle.player, battle.enemy }) do
       if mon and (mon.hp or 0) > 0 then
         if mon.leechSeeded and mon.leechSeedSource and (mon.leechSeedSource.hp or 0) > 0 then
-          local m = hpOf(mon)
-          local maxHp = m.stats and m.stats.hp
-          if maxHp then
-            local amount = math.max(1, math.floor(maxHp / 8))
-            m.hp = math.max(0, (m.hp or 0) - amount)
-            local src = hpOf(mon.leechSeedSource)
-            local srcMax = src.stats and src.stats.hp
-            if srcMax then src.hp = math.min(srcMax, (src.hp or 0) + amount) end
+          -- Real Showdown fixes, 2026-08-28 (explicit user directive,
+          -- verified against Showdown's own real source this same pass
+          -- -- gen2/moves.ts's own real Leech Seed condition confirms
+          -- the drain and the heal both route through the SAME real
+          -- `this.damage(...)`/`this.heal(...)` pair every other
+          -- indirect-damage/drain interaction in this mod's own real
+          -- ability system already keys off, and that the heal is
+          -- SKIPPED outright whenever the drain itself didn't land
+          -- (`if (damage) { this.heal(...) }`) -- both real, confirmed
+          -- gaps this file's own code never checked before:
+          --   Magic Guard: real, confirmed -- blocks the drain entirely
+          --     (the SAME real ability this mod's own damage_immunity
+          --     .lua already applies to status/Gen 1 sand residual,
+          --     Leech Seed is the same real "indirect damage" family).
+          --   Liquid Ooze: real, confirmed -- the SEEDED mon's own
+          --     Liquid Ooze reverses the seeder's heal into damage
+          --     instead, the exact same "apply then correct" shape
+          --     abilities/engine/contact_retaliation.lua's own
+          --     LIQUIDOOZE entry already established for move-based
+          --     draining.
+          local abilityIdOf = mod.exports.abilityIdOf
+          local seededAbility = abilityIdOf and abilityIdOf(mon)
+          if seededAbility ~= "MAGICGUARD" then
+            local m = hpOf(mon)
+            local maxHp = m.stats and m.stats.hp
+            if maxHp then
+              local amount = math.max(1, math.floor(maxHp / 8))
+              m.hp = math.max(0, (m.hp or 0) - amount)
+              local src = hpOf(mon.leechSeedSource)
+              local srcMax = src.stats and src.stats.hp
+              if srcMax then
+                if seededAbility == "LIQUIDOOZE" then
+                  src.hp = math.max(0, (src.hp or 0) - amount)
+                else
+                  src.hp = math.min(srcMax, (src.hp or 0) + amount)
+                end
+              end
+            end
           end
         end
         if mon.nightmare and isAsleepNow(mon) then
@@ -151,6 +189,21 @@ return function(mod)
       if not n.target or n.target.leechSeeded then return {} end
       for _, t in ipairs(mod.exports.curTypesOf(n.target, n.gen2)) do
         if t == "GRASS" then return {} end
+      end
+      -- Real Showdown rule fixed 2026-08-28 (explicit user directive):
+      -- a target protected by a Substitute cannot be seeded at all --
+      -- the same real Substitute check every other hostile status-
+      -- infliction site in this mod already applies (this file's own
+      -- YAWN entry above cites the identical real principle), simply
+      -- never wired for Leech Seed specifically until now. Gen 2's own
+      -- real substitute state lives in the volatile store (a remaining-
+      -- HP number, confirmed elsewhere in this mod); Gen 1's own is a
+      -- direct field on the battler.
+      if n.gen2 then
+        local vol = n.battle:volatile(n.target)
+        if (vol.substitute or 0) > 0 then return {} end
+      elseif n.target.substituteHP and n.target.substituteHP > 0 then
+        return {}
       end
       n.target.leechSeeded = true
       n.target.leechSeedSource = n.user
@@ -192,7 +245,7 @@ return function(mod)
   mod.events:on("battle.turn_ended", function(ev)
     local battle = ev and ev.battle
     if not battle then return end
-    for _, mon in ipairs({ battle.player, battle.enemy }) do
+    for _, mon in ipairs(mod.exports.allActiveBattlers and mod.exports.allActiveBattlers(battle) or { battle.player, battle.enemy }) do
       if mon and mon.yawnTurns and (mon.hp or 0) > 0 then
         mon.yawnTurns = mon.yawnTurns - 1
         if mon.yawnTurns <= 0 then
@@ -262,7 +315,7 @@ return function(mod)
   mod.events:on("battle.turn_ended", function(ev)
     local battle = ev and ev.battle
     if not battle then return end
-    for _, mon in ipairs({ battle.player, battle.enemy }) do
+    for _, mon in ipairs(mod.exports.allActiveBattlers and mod.exports.allActiveBattlers(battle) or { battle.player, battle.enemy }) do
       if mon then
         for _, field in ipairs({ "embargoTurns", "healBlockTurns", "throatChopTurns", "disableTurns" }) do
           if mon[field] then
@@ -325,7 +378,7 @@ return function(mod)
   mod.events:on("battle.turn_ended", function(ev)
     local battle = ev and ev.battle
     if not battle then return end
-    for _, mon in ipairs({ battle.player, battle.enemy }) do
+    for _, mon in ipairs(mod.exports.allActiveBattlers and mod.exports.allActiveBattlers(battle) or { battle.player, battle.enemy }) do
       if mon and mon.perishSongTurns and (mon.hp or 0) > 0 then
         mon.perishSongTurns = mon.perishSongTurns - 1
         if mon.perishSongTurns <= 0 then
@@ -372,25 +425,26 @@ return function(mod)
   mod.content.move_effects:register("GALAR_MIRACLEEYE_EFFECT", { kind = "secondary", run = markImmunityNegated("miracleEyed") })
   mod.content.move_effects:register("GALAR_SMACKDOWN_EFFECT", { kind = "secondary", run = markImmunityNegated("groundedByMove") })
 
-  -- Foresight/Miracle Eye/Smack Down REMOVE a natural 0x immunity
-  -- (Ground-vs-Flying's ctx.mult already IS 0 -- defeat it with a large
-  -- factor, same shape Wonder Guard's own inverse case already uses).
-  -- Telekinesis is the OPPOSITE direction -- it GRANTS a new Ground
-  -- immunity a Ground-type move wouldn't naturally have (ctx.mult would
-  -- otherwise be >0) -- these are two different real mechanics, checked
-  -- as two separate conditions rather than merged into one, after
-  -- getting this backwards once while drafting.
-  registerPostEffectivenessModifier("type_immunity_negation", 0, function(ctx)
-    local target = ctx.target
-    local moveType = ctx.move and ctx.move.type
-    if not (target and moveType) then return 1.0 end
-    if moveType == "GROUND" and target.telekinesisTurns then return 0 end
-    if ctx.mult ~= 0 then return 1.0 end
-    if (moveType == "NORMAL" or moveType == "FIGHTING") and target.foresighted then return math.huge end
-    if moveType == "PSYCHIC" and target.miracleEyed then return math.huge end
-    if moveType == "GROUND" and target.groundedByMove then return math.huge end
-    return 1.0
-  end)
+  -- Foresight/Miracle Eye/Smack Down/Scrappy/Mind's Eye's real immunity
+  -- NEGATION, and Telekinesis's real immunity GRANT, USED to live here as
+  -- a registerPostEffectivenessModifier("type_immunity_negation", ...)
+  -- entry -- confirmed 2026-08-28 (Wonder-Guard-reachability review,
+  -- following the Magic Guard audit) to be genuinely UNREACHABLE dead
+  -- code in that shape: computeModernDamage (combat/modern_combat.lua)
+  -- returns 0 damage the instant the NATURAL type multiplier reads 0,
+  -- before the postEffectivenessModifiers loop this entry lived in ever
+  -- runs -- so none of these five abilities/effects ever actually let a
+  -- hit through, despite being fully coded up. Moved into
+  -- combat/modern_combat.lua's own `resolvedTypeMult` (see that file's
+  -- header, right above its `curTypesOf`) instead, which resolves
+  -- negation against the real defender TYPE LIST before either the
+  -- aggregate multiplier or the real per-row TypeChart.rows() scaling
+  -- ever runs -- the only shape that can actually work, since a post-hoc
+  -- "override the final number" trick can't stop TypeChart.rows() from
+  -- independently re-walking the same natural 0x row. The mon-flag
+  -- writes just above (foresighted/miracleEyed/groundedByMove,
+  -- telekinesisTurns elsewhere) are unchanged and still the real signal
+  -- resolvedTypeMult reads.
 
   ------------------------------------------------------------------
   -- Telekinesis: real duration 3, moves never miss (except OHKO), real
@@ -426,7 +480,7 @@ return function(mod)
   mod.events:on("battle.turn_ended", function(ev)
     local battle = ev and ev.battle
     if not battle then return end
-    for _, mon in ipairs({ battle.player, battle.enemy }) do
+    for _, mon in ipairs(mod.exports.allActiveBattlers and mod.exports.allActiveBattlers(battle) or { battle.player, battle.enemy }) do
       if mon and mon.telekinesisTurns then
         mon.telekinesisTurns = mon.telekinesisTurns - 1
         if mon.telekinesisTurns <= 0 then mon.telekinesisTurns = nil end

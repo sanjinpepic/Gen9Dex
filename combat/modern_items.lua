@@ -64,6 +64,38 @@ return function(mod)
   local function itemOf(who, gen2)
     return gen2 and who.item or nil
   end
+  -- Exported (Phase 8, other bucket, the item-interaction ability
+  -- family) -- the one real accessor for "does this battler currently
+  -- hold an item," so Frisk/Magician/Pickpocket/etc. reuse it rather
+  -- than re-deriving the same gen2-only-field rule.
+  mod.exports.itemOf = itemOf
+
+  -- Ripen (Phase 8, other bucket): "this Pokemon's berries have double
+  -- the effect" -- real scope is the EATER's own ability, whichever
+  -- berry it's eating and whoever it originally belonged to (Bug Bite/
+  -- Pluck stealing an opponent's berry still doubles if the EATER is the
+  -- Ripen holder) -- confirmed via Showdown's own onEatItem hook being
+  -- keyed off the eating Pokemon, not the item's original holder.
+  -- Defined up here (not alongside applyEatenBerryEffect further down)
+  -- so the held_item.trigger wrap below -- the native auto-eat path --
+  -- can call it too.
+  local function ripenParameter(eater, parameter)
+    local abilityIdOf = mod.exports.abilityIdOf
+    if abilityIdOf and abilityIdOf(eater) == "RIPEN" then return parameter * 2 end
+    return parameter
+  end
+  -- Cheek Pouch (Phase 8, other bucket): "whenever this Pokemon eats a
+  -- Berry, it also restores 1/3 of its own max HP" -- a flat bonus heal
+  -- ADDED to the berry's own real effect, not a replacement, and fires
+  -- regardless of what the berry itself actually did (even a status-cure
+  -- berry with no HP component of its own still heals 1/3 here).
+  local function applyCheekPouch(battle, eater)
+    local abilityIdOf = mod.exports.abilityIdOf
+    if not (abilityIdOf and abilityIdOf(eater) == "CHEEKPOUCH") then return end
+    local maxHp = eater.maxHp or (eater.stats and eater.stats.hp)
+    if not (maxHp and maxHp > 0) then return end
+    battle:heal(eater, math.max(1, math.floor(maxHp / 3)), { anim = "RECOVER" })
+  end
 
   ------------------------------------------------------------------
   -- Item classification. All ids below are real, ROM-extracted Gen 2
@@ -81,6 +113,8 @@ return function(mod)
     ICE_BERRY = true, BITTER_BERRY = true, MINT_BERRY = true,
     MIRACLEBERRY = true,
   }
+  -- Exported alongside itemOf above -- same reuse reason.
+  mod.exports.knownBerries = KNOWN_BERRIES
   local BALL_ITEMS = {
     MASTER_BALL = true, ULTRA_BALL = true, GREAT_BALL = true, POKE_BALL = true,
     HEAVY_BALL = true, LEVEL_BALL = true, LURE_BALL = true, FAST_BALL = true,
@@ -116,6 +150,10 @@ return function(mod)
   local function isUnremovable(itemId)
     return MAIL_ITEMS[itemId] == true
   end
+  -- Exported alongside itemOf/knownBerries above -- same reuse reason
+  -- (Magician/Pickpocket's own real steal both respect this exact same
+  -- Mail exemption Knock Off/Thief/Covet already established).
+  mod.exports.isUnremovable = isUnremovable
 
   -- Real per-item Fling power, per this project's standing source-of-
   -- truth rule (Pokemon Showdown Gen 9 is primary; other sources are
@@ -194,12 +232,43 @@ return function(mod)
   -- itself automatically for a path that doesn't go through
   -- held_item.trigger's "residual" case.
   ------------------------------------------------------------------
+  -- Unnerve/As One family (Phase 7, prevent bucket): "opposing Pokémon
+  -- cannot eat held Berries" -- the real, confirmed AUTO-EAT block only
+  -- (Bug Bite/Pluck's own forced eating is explicitly unaffected per
+  -- national_dex's own real text: "Affected Pokémon can still use Bug
+  -- Bite or Pluck to eat a target's Berry" -- a different code path,
+  -- applyEatenBerryEffect below, never routed through held_item.trigger
+  -- at all). Checked via Battle:heldEffect's own real hook contract: a
+  -- non-string returned effect reads as "no effect" to Battle
+  -- :tickHeldItem's own native caller (`if not effect then return end`,
+  -- confirmed by direct source read) -- so short-circuiting BEFORE the
+  -- existing next(c) call, rather than after, is what actually blocks
+  -- consumption instead of merely skipping this file's own bookkeeping.
+  local UNNERVE_FAMILY = { UNNERVE = true, ASONEGLASTRIER = true, ASONESPECTRIER = true }
   mod.hooks:wrap("held_item.trigger", function(next, c)
-    if c.trigger == "residual" and c.effect == "HELD_BERRY" and c.mon then
+    if c.trigger == "residual" and c.effect == "HELD_BERRY" and c.mon and c.battle then
+      local abilityIdOf = mod.exports.abilityIdOf
+      local allActiveBattlers = mod.exports.allActiveBattlers
+      if abilityIdOf and allActiveBattlers then
+        local eaterSide = c.battle:sideOf(c.mon)
+        for _, opp in ipairs(allActiveBattlers(c.battle)) do
+          if opp and c.battle:sideOf(opp) ~= eaterSide and UNNERVE_FAMILY[abilityIdOf(opp)] then
+            return nil, 0
+          end
+        end
+      end
       local maxHp = c.mon.maxHp or (c.mon.stats and c.mon.stats.hp) or 0
       if (c.mon.hp or 0) * 2 <= maxHp then
         c.mon.ggdLastConsumedItem = c.item
         c.mon.ggdConsumedBerryThisBattle = true
+        -- Ripen/Cheek Pouch (Phase 8, other bucket): this is the real
+        -- native auto-eat consumption point -- mutating c.parameter here
+        -- (BEFORE next(c) returns it up through Battle:heldEffect's own
+        -- real contract, confirmed by direct source read: its base case
+        -- literally returns c.effect/c.parameter) genuinely doubles the
+        -- native heal itself, not just this file's own bookkeeping.
+        c.parameter = ripenParameter(c.mon, c.parameter or 0)
+        applyCheekPouch(c.battle, c.mon)
       end
     end
     return next(c)
@@ -264,7 +333,12 @@ return function(mod)
     if moveId == "FLING" then
       local gen2 = isGen2Battle(ctx.battle)
       local item = gen2 and itemOf(ctx.user, true) or nil
-      if not gen2 or not item or isUnflingable(item) then
+      -- Klutz (Phase 7, prevent bucket): "prevents using or benefiting
+      -- from its held item, Fling included" -- real, confirmed exclusion
+      -- named in Fling's own real text.
+      local abilityIdOf = mod.exports.abilityIdOf
+      local klutzed = abilityIdOf and abilityIdOf(ctx.user) == "KLUTZ"
+      if not gen2 or not item or isUnflingable(item) or klutzed then
         return 0, { crit = false, typeMult = 0, effectiveness = 0 }
       end
     end
@@ -307,7 +381,11 @@ return function(mod)
     if not (battle and moveId == "KNOCKOFF" and ev.target and isGen2Battle(battle)) then return end
     local ok, err = pcall(function()
       local item = ev.target.item
-      if not item or isUnremovable(item) then return end
+      -- Sticky Hold (Phase 7, prevent bucket): real, unconditional block
+      -- on item removal by another Pokémon.
+      local abilityIdOf = mod.exports.abilityIdOf
+      local stickyHeld = abilityIdOf and abilityIdOf(ev.target) == "STICKYHOLD"
+      if not item or isUnremovable(item) or stickyHeld then return end
       local def = battle:itemDef(item)
       ev.target.item = nil
       battle:emit({ kind = "message",
@@ -333,7 +411,9 @@ return function(mod)
     local ok, err = pcall(function()
       if ev.user.item then return end
       local item = ev.target.item
-      if not item or isUnremovable(item) then return end
+      local abilityIdOf = mod.exports.abilityIdOf
+      local stickyHeld = abilityIdOf and abilityIdOf(ev.target) == "STICKYHOLD"
+      if not item or isUnremovable(item) or stickyHeld then return end
       local def = battle:itemDef(item)
       ev.target.item = nil
       ev.user.item = item
@@ -396,7 +476,8 @@ return function(mod)
   -- ordinary damage with no bonus effect, so no battle.damage wrap here.
   ------------------------------------------------------------------
   local function applyEatenBerryEffect(battle, eater, def, eaterName)
-    local effect, parameter = def.heldEffect, def.heldParameter or 0
+    local effect, parameter = def.heldEffect, ripenParameter(eater, def.heldParameter or 0)
+    applyCheekPouch(battle, eater)
     if effect == "HELD_BERRY" then
       battle:heal(eater, parameter > 0 and parameter or 10, { anim = "RECOVER" })
       return true
@@ -459,7 +540,8 @@ return function(mod)
       end
       local user = n.user
       local restored = user.ggdLastConsumedItem
-      if user.item or not restored then
+      local abilityIdOf = mod.exports.abilityIdOf
+      if user.item or not restored or (abilityIdOf and abilityIdOf(user) == "KLUTZ") then
         return { romText(n.battle.data, "_ButItFailedText", "But, it failed!") }
       end
       user.item = restored

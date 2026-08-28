@@ -33,8 +33,19 @@ return function(mod, data)
   -- DAMP + GORILLATACTICS
   ------------------------------------------------------------------
   local EXPLOSIVE_MOVES = { SELFDESTRUCT = true, EXPLOSION = true }
+  -- Real N-way check (2026-08-28): Damp's own real text is "while this
+  -- Pokémon is in battle" -- ANY battler, not just whichever two happen
+  -- to be battle.player/battle.enemy. mod.exports.allActiveBattlers
+  -- (combat/move_targeting.lua) is the real roster; falls back to the
+  -- native pair if that primitive somehow isn't loaded yet.
   local function anyBattlerHasDamp(battle)
-    return data.DAMP and (abilityIdOf(battle.player) == "DAMP" or abilityIdOf(battle.enemy) == "DAMP")
+    if not data.DAMP then return false end
+    local allActiveBattlers = mod.exports.allActiveBattlers
+    local roster = allActiveBattlers and allActiveBattlers(battle) or { battle.player, battle.enemy }
+    for _, mon in ipairs(roster) do
+      if abilityIdOf(mon) == "DAMP" then return true end
+    end
+    return false
   end
   mod.exports.anyBattlerHasDamp = anyBattlerHasDamp
 

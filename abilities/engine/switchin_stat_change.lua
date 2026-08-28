@@ -67,8 +67,20 @@ return function(mod, data)
   -- Applies one already-resolved (mon, target, stat, stages) change --
   -- the per-target body every foes-scope target in the loop below and
   -- the single self-target case both reduce to.
+  -- Mirror Armor (Phase 8, other bucket): records this hostile switch-
+  -- in trigger (Intimidate/Intrepid Sword/Dauntless Shield -- the ONLY
+  -- real hostile-scope members of this whole file) into the shared
+  -- interaction memory (combat/interaction_memory.lua) BEFORE the
+  -- actual stage change runs, so a Mirror Armor holder's own
+  -- changeStage check (modern_combat.lua) can find "who did this to me
+  -- most recently" and redirect the drop back onto them.
+  local recordInteraction = mod.exports.recordInteraction
+
   local function applyToOneTarget(battle, mon, target, stat, effect, fromEnemy)
     if not target or (target.hp or 0) <= 0 then return end
+    if fromEnemy and recordInteraction then
+      recordInteraction(battle, mon, target, "ability", abilityIdOf(mon))
+    end
     -- changeStageAgainstMist has no Substitute check of its own (see this
     -- file's own header) -- applied here so a hostile native-store change
     -- respects it exactly like changeStage already does for the others.
@@ -125,23 +137,26 @@ return function(mod, data)
   mod.events:on("battle.started", function(ev)
     local battle = ev and ev.battle
     if not battle then return end
-    -- Speed order, not fixed player-then-enemy -- see combat/turn_order
-    -- .lua's own orderSwitchInMons header for the full rule (real
-    -- simultaneous switch-in resolution is fastest-first, and since each
-    -- of these overwrites shared state, the slower mon's own trigger is
-    -- what persists on a mismatch -- Intimidate/Intrepid Sword/Dauntless
-    -- Shield/Supersweet Syrup don't overwrite each other's stat targets
-    -- the way weather/terrain do, so this mostly matters for a future
-    -- same-tier collision, but the ordering itself should still be
-    -- correct rather than fixed). Read lazily (not hoisted to a local at
-    -- install time): this file loads before combat/turn_order.lua in
-    -- main.lua's own sequence, but this closure only runs later, during a
-    -- real battle, by which point every mod has finished loading.
-    local order = mod.exports.orderSwitchInMons
-    local first, second = battle.player, battle.enemy
-    if order then first, second = order(battle, battle.player, battle.enemy) end
-    if first then applySwitchInAbility(battle, first) end
-    if second then applySwitchInAbility(battle, second) end
+    -- Speed order across the REAL, N-way roster, not a fixed player-then-
+    -- enemy pair -- see combat/turn_order.lua's own orderActiveBattlers
+    -- header for the full rule (real simultaneous switch-in resolution
+    -- is fastest-first across however many battlers entered together,
+    -- and since each of these overwrites shared state, the slowest
+    -- mon's own trigger is what persists on a mismatch -- Intimidate/
+    -- Intrepid Sword/Dauntless Shield/Supersweet Syrup don't overwrite
+    -- each other's stat targets the way weather/terrain do, so this
+    -- mostly matters for a future same-tier collision, but the ordering
+    -- itself should still be correct rather than fixed). Both exports
+    -- read lazily (not hoisted to a local at install time): this file
+    -- loads before combat/turn_order.lua and combat/move_targeting.lua
+    -- in main.lua's own sequence, but this closure only runs later,
+    -- during a real battle, by which point every mod has finished
+    -- loading.
+    local allActiveBattlers = mod.exports.allActiveBattlers
+    local orderActiveBattlers = mod.exports.orderActiveBattlers
+    local roster = allActiveBattlers and allActiveBattlers(battle) or { battle.player, battle.enemy }
+    local ordered = orderActiveBattlers and orderActiveBattlers(battle, roster) or roster
+    for _, mon in ipairs(ordered) do applySwitchInAbility(battle, mon) end
   end)
 
   mod.events:on("battle.battler_switched", function(ev)

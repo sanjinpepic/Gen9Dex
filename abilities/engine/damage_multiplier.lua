@@ -9,12 +9,13 @@
 -- already established.
 --
 -- Still deferred (see abilities/data/damage_multiplier.lua's own header
--- for the exact reasons): Battery/Power Spot/Friend Guard/Steely Spirit
--- (ally-scope, blocked pending the future multi-battler mod), Flash
--- Fire, Aerilate/Pixilate/Galvanize/Refrigerate (need a move-type
--- override primitive this mod doesn't have). Electromorphosis/Wind
--- Power/Hustle/Fur Coat/Ice Scales/Stakeout/Sheer Force are built below
--- (Sheer Force and Hustle each only half -- see their own sections).
+-- for the exact reasons): Flash Fire, Aerilate/Pixilate/Galvanize/
+-- Refrigerate (need a move-type override primitive this mod doesn't
+-- have). Electromorphosis/Wind Power/Hustle/Fur Coat/Ice Scales/
+-- Stakeout/Sheer Force are built below (Sheer Force and Hustle each
+-- only half -- see their own sections). Battery/Power Spot/Friend
+-- Guard/Steely Spirit (ally-scope) are also built below, un-deferred
+-- 2026-08-28 once requestAdjacency's own real .allies list existed.
 --
 -- MOVE FLAGS -- confirmed real and live (2026-08-27): national_dex's own
 -- move-flags data (data/moves/generated/flags.lua, sourced directly from
@@ -49,10 +50,11 @@ return function(mod, data)
   local curTypesOf = mod.exports.curTypesOf
   local currentWeather = mod.exports.currentWeather
   local isGen2Battle = mod.exports.isGen2Battle
+  local requestAdjacency = mod.exports.requestAdjacency
   assert(abilityIdOf and abilityBehaviorOf and registerDamageModifier
       and registerPostEffectivenessModifier and curTypesOf and currentWeather
-      and isGen2Battle,
-    "damage_multiplier: modern_combat.lua and ability_dispatch.lua must load first")
+      and isGen2Battle and requestAdjacency,
+    "damage_multiplier: modern_combat.lua, move_targeting.lua, and ability_dispatch.lua must load first")
 
   local nationalDex = mod.find and mod.find("national_dex")
   assert(nationalDex and nationalDex.exports and nationalDex.exports.moveById
@@ -187,7 +189,7 @@ return function(mod, data)
   -- the one attacking.
   ------------------------------------------------------------------
   local function fieldAuraFactor(battle, moveType)
-    for _, mon in ipairs({ battle.player, battle.enemy }) do
+    for _, mon in ipairs(mod.exports.allActiveBattlers and mod.exports.allActiveBattlers(battle) or { battle.player, battle.enemy }) do
       if mon then
         local effects = multiplierEffects(mon, "damage_dealt_multiplier")
         if effects then
@@ -202,8 +204,95 @@ return function(mod, data)
     return nil
   end
 
+  -- Aura Break (Phase 8, other bucket): a real, confirmed gap this file
+  -- left open until now -- fieldAuraFactor above applies Dark Aura/Fairy
+  -- Aura's own boost unconditionally, never checking for Aura Break's
+  -- real "flips a would-be-boosted aura move to a 2/3 REDUCTION instead"
+  -- effect anywhere. Scoped to the exact real rule: only flips a move
+  -- that an aura would ACTUALLY have boosted (fieldAuraFactor found a
+  -- real factor) -- Aura Break does nothing to a move no aura touches.
+  local function auraBreakActive(battle)
+    for _, mon in ipairs(mod.exports.allActiveBattlers and mod.exports.allActiveBattlers(battle) or { battle.player, battle.enemy }) do
+      if mon and abilityIdOf(mon) == "AURABREAK" then return true end
+    end
+    return false
+  end
+
   registerDamageModifier("field_aura", 90, function(ctx)
-    return fieldAuraFactor(ctx.battle, ctx.move.type) or 1.0
+    local factor = fieldAuraFactor(ctx.battle, ctx.move.type)
+    if not factor then return 1.0 end
+    if auraBreakActive(ctx.battle) then return 2 / 3 end
+    return factor
+  end)
+
+  ------------------------------------------------------------------
+  -- Battery / Power Spot / Friend Guard / Steely Spirit -- real ally-
+  -- scope multipliers, un-deferred now that requestAdjacency's own real
+  -- ally list exists (this file's own header used to mark all four as
+  -- blocked pending a future multi-battler mod that has since landed --
+  -- stale, fixed here rather than left standing).
+  --
+  -- Battery: real Showdown scope is narrower than this record's own
+  -- generic effect text ("Ally Pokémon's moves") states -- confirmed
+  -- against Showdown's own source, Special-category moves only. Applied
+  -- here even though the structured `factor`/`kind` fields alone don't
+  -- carry that restriction, per this project's own standing rule that
+  -- Showdown's real source wins over an imprecise dex-text summary.
+  -- Power Spot: same 1.3x, no category restriction, real and confirmed.
+  -- Neither affects the holder's own moves (both real texts explicit).
+  ------------------------------------------------------------------
+  registerDamageModifier("battery_powerspot", 90, function(ctx)
+    local mult = 1.0
+    for _, ally in ipairs(requestAdjacency(ctx.battle, ctx.user, nil).allies) do
+      local id = abilityIdOf(ally)
+      if id == "BATTERY" and data.BATTERY and ctx.category == "Special" then
+        local effects = multiplierEffects(ally, "damage_dealt_multiplier")
+        if effects and effects[1] and effects[1].factor then mult = mult * effects[1].factor end
+      elseif id == "POWERSPOT" and data.POWERSPOT then
+        local effects = multiplierEffects(ally, "damage_dealt_multiplier")
+        if effects and effects[1] and effects[1].factor then mult = mult * effects[1].factor end
+      end
+    end
+    return mult
+  end)
+
+  -- Friend Guard -- damage TAKEN, real confirmed stacking (national_dex's
+  -- own notes: "stacks if multiple allied Pokémon have it"), so every
+  -- qualifying ally multiplies in, not just the first match.
+  registerDamageModifier("friendguard", 90, function(ctx)
+    if not data.FRIENDGUARD then return 1.0 end
+    local mult = 1.0
+    for _, ally in ipairs(requestAdjacency(ctx.battle, ctx.target, nil).allies) do
+      if abilityIdOf(ally) == "FRIENDGUARD" then
+        local effects = multiplierEffects(ally, "damage_taken_multiplier")
+        if effects and effects[1] and effects[1].factor then mult = mult * effects[1].factor end
+      end
+    end
+    return mult
+  end)
+
+  -- Steely Spirit -- unlike Battery/Power Spot, real text is explicit
+  -- this boosts the HOLDER's own Steel moves too ("the Pokémon AND its
+  -- allies"), and real Showdown confirms it stacks across multiple
+  -- holders on the same side.
+  registerDamageModifier("steelyspirit", 90, function(ctx)
+    if not (data.STEELYSPIRIT and ctx.move.type == "STEEL") then return 1.0 end
+    local mult = 1.0
+    local roster = { ctx.user }
+    for _, ally in ipairs(requestAdjacency(ctx.battle, ctx.user, nil).allies) do
+      roster[#roster + 1] = ally
+    end
+    for _, mon in ipairs(roster) do
+      if abilityIdOf(mon) == "STEELYSPIRIT" then
+        local effects = multiplierEffects(mon, "damage_dealt_multiplier")
+        for _, effect in ipairs(effects or {}) do
+          if effect.moveType and effect.moveType:upper() == "STEEL" and effect.factor then
+            mult = mult * effect.factor
+          end
+        end
+      end
+    end
+    return mult
   end)
 
   ------------------------------------------------------------------
@@ -418,7 +507,7 @@ return function(mod, data)
   mod.events:on("battle.turn_started", function(ev)
     local battle = ev and ev.battle
     if not battle then return end
-    for _, mon in ipairs({ battle.player, battle.enemy }) do
+    for _, mon in ipairs(mod.exports.allActiveBattlers and mod.exports.allActiveBattlers(battle) or { battle.player, battle.enemy }) do
       if mon then
         if isGen2Battle and isGen2Battle(battle) then
           battle:volatile(mon).switchedInThisTurn = nil

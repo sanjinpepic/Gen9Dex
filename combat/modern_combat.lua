@@ -83,6 +83,71 @@ return function(mod)
   -- immunity check (Ground/Steel/Rock) needs the same Transform/
   -- Conversion-aware live type list this file already uses for STAB.
   mod.exports.curTypesOf = curTypesOf
+
+  -- Real, fully-resolved defender type multiplier -- the single place
+  -- Foresight/Miracle Eye/Smack Down/Scrappy/Mind's Eye's real immunity
+  -- NEGATION and Telekinesis's real immunity GRANT both actually apply,
+  -- before the natural TypeChart lookup ever runs. Found 2026-08-28
+  -- during the Wonder-Guard-reachability review ("review abilities
+  -- similar to these," following the Magic Guard audit): this logic
+  -- used to live ONLY inside modern_status_volatiles.lua's own
+  -- registerPostEffectivenessModifier("type_immunity_negation", ...)
+  -- entry, which is unreachable dead code -- this function's own caller
+  -- below (computeModernDamage) returns 0 damage the instant the
+  -- NATURAL multiplier reads 0, before the postEffectivenessModifiers
+  -- loop that entry lives in ever runs, so Scrappy/Mind's Eye/Foresight/
+  -- Miracle Eye/Smack Down never actually let a hit through in practice
+  -- despite being fully coded up. Fixed by resolving negation HERE,
+  -- against the real defender type LIST (filtering out whichever single
+  -- type causes the natural 0x, e.g. Ghost for a Normal/Fighting move
+  -- under Scrappy) before either the aggregate multiplier or the real
+  -- per-row TypeChart.rows() scaling ever sees it -- a raw "override the
+  -- final number to math.huge" trick (the old entry's own approach)
+  -- can't work here since TypeChart.rows() still walks the SAME 0x row
+  -- independently of any post-hoc multiplier.
+  --
+  -- Exported (not just used internally) so combat/legacy_move_takeover
+  -- .lua's own centralized fixed-damage/OHKO moves (Seismic Toss, Night
+  -- Shade, Sonic Boom, Dragon Rage, Psywave, Super Fang, Fissure/
+  -- Guillotine/Horn Drill, Sheer Cold) -- which never call
+  -- computeModernDamage at all -- can reach the exact same real
+  -- resolution instead of the raw, negation-blind TypeChart.effectiveness
+  -- check they used before this fix.
+  local function resolvedTypeMult(battle, user, target, gen2, moveType)
+    -- Telekinesis: the OPPOSITE direction -- GRANTS a Ground immunity a
+    -- Ground-type move wouldn't naturally have, regardless of the
+    -- target's real types. Checked first/short-circuited, matching the
+    -- old entry's own real ordering.
+    if moveType == "GROUND" and target.telekinesisTurns then
+      return 0, {}
+    end
+    local targetTypes = curTypesOf(target, gen2)
+    if mod.exports.defensiveTypesOf then
+      targetTypes = mod.exports.defensiveTypesOf(battle, target, gen2, targetTypes)
+    end
+    local negate = false
+    if moveType == "NORMAL" or moveType == "FIGHTING" then
+      if target.foresighted then negate = true end
+      local abilityIdOf = mod.exports.abilityIdOf
+      local aid = abilityIdOf and user and abilityIdOf(user)
+      if aid == "SCRAPPY" or aid == "MINDSEYE" then negate = true end
+    elseif moveType == "PSYCHIC" and target.miracleEyed then
+      negate = true
+    elseif moveType == "GROUND" and target.groundedByMove then
+      negate = true
+    end
+    if negate then
+      local filtered = {}
+      for _, dt in ipairs(targetTypes) do
+        if TypeChart.effectiveness(moveType, { dt }) ~= 0 then
+          filtered[#filtered + 1] = dt
+        end
+      end
+      targetTypes = filtered
+    end
+    return TypeChart.effectiveness(moveType, targetTypes), targetTypes
+  end
+  mod.exports.resolvedTypeMult = resolvedTypeMult
   -- Exported for the same sibling: several weather touch-points (the
   -- Solar Beam charge-skip performMove wrap, the sand-chip end-of-turn
   -- hook, the Thunder/Blizzard battle.accuracy hook) run OUTSIDE the
@@ -158,6 +223,47 @@ return function(mod)
     table.sort(postEffectivenessModifiers, function(a, b) return a.priority > b.priority end)
   end
   mod.exports.registerPostEffectivenessModifier = registerPostEffectivenessModifier
+
+  -- Runs a caller-chosen SUBSET of the postEffectivenessModifiers chain
+  -- against an already-computed damage number and a real, resolved type
+  -- multiplier -- built for combat/legacy_move_takeover.lua's own
+  -- centralized fixed-damage/OHKO moves, which never call
+  -- computeModernDamage (this file's own base formula, below) and so
+  -- never reach this chain naturally. `onlyIds` matters: real Showdown
+  -- fact, verified against Bulbapedia/Smogon sourcing during the
+  -- 2026-08-28 Wonder-Guard-reachability review -- Wonder Guard's own
+  -- entry ("wonderguard") is a real HARD GATE these fixed-damage moves
+  -- DO respect (it blocks anything not super effective, fixed-damage
+  -- moves included -- confirmed, Shedinja's own real Psywave/Fissure/
+  -- Metal Burst immunity is the textbook example), but Filter/Solid
+  -- Rock/Prism Armor/Tinted Lens/Neuroforce/Tera Shell are honest
+  -- SCALING modifiers (0.75x/1.3x/etc. on the super/not-very-effective
+  -- multiplier) that a fixed-damage move's own number never receives in
+  -- the first place -- a fixed amount doesn't scale by type
+  -- effectiveness even in the normal, non-ability case, confirmed via
+  -- real sourcing ("Solid Rock (and Filter)," Smogon forums). Passing
+  -- every caller an explicit allow-list keeps that real distinction
+  -- correct instead of silently over-applying scaling abilities that
+  -- were never supposed to reach these moves.
+  local function applyPostEffectivenessModifiers(ctx, onlyIds)
+    local allow
+    if onlyIds then
+      allow = {}
+      for _, id in ipairs(onlyIds) do allow[id] = true end
+    end
+    local d = ctx.damage
+    for _, entry in ipairs(postEffectivenessModifiers) do
+      if not allow or allow[entry.id] then
+        local m = entry.fn({
+          battle = ctx.battle, user = ctx.user, target = ctx.target, move = ctx.move,
+          category = ctx.category, mult = ctx.mult, gen2 = ctx.gen2,
+        }) or 1.0
+        if m ~= 1.0 then d = math.floor(d * m) end
+      end
+    end
+    return d
+  end
+  mod.exports.applyPostEffectivenessModifiers = applyPostEffectivenessModifiers
 
   -- Part B Phase 5 Tier 1: real per-move variable base power (Heat Crash/
   -- Heavy Slam's weight ratio, Power Trip's stat-stage count, Flail's HP
@@ -305,6 +411,30 @@ return function(mod)
   end
   mod.exports.currentWeather = currentWeather
 
+  -- Air Lock/Cloud Nine (Phase 8, other bucket): "nullifies all weather
+  -- effects in battle without stopping the weather itself" -- real,
+  -- confirmed field-wide effect (active while EITHER holder is out,
+  -- either side), checked via the real N-way roster
+  -- (mod.exports.allActiveBattlers) rather than the hardcoded pair.
+  -- Honestly scoped, not exhaustive: wired into the single highest-
+  -- value case (this file's own Sun/Rain Fire/Water damage multiplier,
+  -- right below) -- NOT into every other weather-dependent mechanic
+  -- scattered across this mod (Chlorophyll-family speed doubling,
+  -- Thunder/Blizzard's real accuracy exception, Synthesis/Moonlight/
+  -- Morning Sun's weather-variable heal fraction, Sand's own chip
+  -- damage) -- each of those would need its own real touch, not
+  -- attempted this pass, a real remaining gap.
+  mod.exports.weatherNullified = function(battle)
+    local allActiveBattlers = mod.exports.allActiveBattlers
+    local abilityIdOf = mod.exports.abilityIdOf
+    if not (battle and allActiveBattlers and abilityIdOf) then return false end
+    for _, mon in ipairs(allActiveBattlers(battle)) do
+      local id = mon and abilityIdOf(mon)
+      if id == "AIRLOCK" or id == "CLOUDNINE" then return true end
+    end
+    return false
+  end
+
   -- 5 turns: real Showdown's default weather duration (no weather-rock/
   -- ability extension modeled), and exactly Gen 2's own native
   -- Effects.WEATHER_TURNS -- both engines agree already.
@@ -340,7 +470,11 @@ return function(mod)
     -- switchin_primal_weather.lua's own "ends when the setter leaves"
     -- listener checks to stay permanent for the whole fight rather than
     -- clearing on a mid-fight boss-side switch.
-    if key and battle and setterMon and setterMon == battle.enemy
+    -- Real N-way check (2026-08-28): "the boss set this" generalizes to
+    -- "an enemy-side battler set this" (battle:sideOf), not literal
+    -- identity against battle.enemy -- same reasoning as boss_fight_
+    -- status.lua's own fix, applied here.
+    if key and battle and setterMon and battle:sideOf(setterMon) == "enemy"
         and mod.exports.bossFightHas and mod.exports.bossFightHas(battle, "sun") then
       turns = math.huge
       battle.weatherPrimal = true
@@ -400,7 +534,11 @@ return function(mod)
   -- .enemy) rather than silently bypassing the lock.
   mod.exports.canSetWeather = function(battle, isPrimalSource, setterMon)
     if battle and mod.exports.bossFightHas and mod.exports.bossFightHas(battle, "sun") then
-      return setterMon ~= nil and setterMon == battle.enemy
+      -- Real N-way check (2026-08-28): any enemy-side battler authorized,
+      -- not just the literal battle.enemy object -- see this function's
+      -- own header note above for the "boss's own side" rule this
+      -- generalizes correctly rather than narrows.
+      return setterMon ~= nil and battle:sideOf(setterMon) == "enemy"
     end
     if not (battle and battle.weatherPrimal) then return true end
     return isPrimalSource == true
@@ -419,7 +557,34 @@ return function(mod)
   -- the plan). Registered here, not in modern_weather.lua, purely so it
   -- sits next to currentWeather() -- the actual call site (registerDamage
   -- Modifier is already a public export) doesn't care which file calls it.
+  -- Mega Sol (Phase 8, other bucket -- explicit user directive, "crucial"
+  -- to build for real): a real, personal-only harsh-sunlight simulation
+  -- for this Pokemon's OWN moves specifically, confirmed by national_dex
+  --'s own real notes ("a personal, simulated weather state distinct
+  -- from set_weather, which would change the field weather for everyone
+  -- rather than just this Pokémon's own moves") -- NOT a field-weather
+  -- setter, so it correctly coexists with any real (or absent, or
+  -- opposite) actual field weather.
+  --
+  -- Checked FIRST, before either the real weatherNullified gate or the
+  -- real currentWeather read, and returns immediately when it applies --
+  -- per explicit user spec: "doesn't get blocked by any weather
+  -- suppression" (Air Lock/Cloud Nine's own real field-wide nullify
+  -- never touches a personal, non-field effect) and "permanent... until
+  -- ability is suppressed/changed" (no separate persistence flag is
+  -- actually needed for that: abilityIdOf itself already returns nil
+  -- the instant Neutralizing Gas suppresses this holder, or the instant
+  -- setAbility overwrites it to something else -- a live per-hit check
+  -- against abilityIdOf already IS "on for as long as the ability
+  -- itself is," with zero extra state to leak across turns or battles).
   registerDamageModifier("weather", 110, function(ctx)
+    local abilityIdOf = mod.exports.abilityIdOf
+    if abilityIdOf and ctx.user and abilityIdOf(ctx.user) == "MEGASOL" then
+      if ctx.move.type == "FIRE" then return 1.5 end
+      if ctx.move.type == "WATER" then return 0.5 end
+      return 1.0
+    end
+    if mod.exports.weatherNullified and mod.exports.weatherNullified(ctx.battle) then return 1.0 end
     local weather = currentWeather(ctx.battle, ctx.gen2)
     if weather == "SUN" then
       if ctx.move.type == "FIRE" then return 1.5 end
@@ -539,7 +704,18 @@ return function(mod)
     local dexEntry = def and def.dexEntry
     if type(dexEntry) ~= "table" then return nil end
     local w = dexEntry.weightKg or dexEntry.weight
-    return (type(w) == "number" and w > 0) and w or nil
+    if not (type(w) == "number" and w > 0) then return nil end
+    -- Heavy Metal / Light Metal (Phase 8, other bucket): real, confirmed
+    -- effect is doubling/halving the mon's own EFFECTIVE weight for
+    -- every weight-based calculation, this function's one real choke
+    -- point (both directions of Heat Crash/Heavy Slam's ratio, and any
+    -- future weight-based move added later) -- not a move-specific
+    -- patch.
+    local abilityIdOf = mod.exports.abilityIdOf
+    local id = abilityIdOf and abilityIdOf(who)
+    if id == "HEAVYMETAL" then w = w * 2
+    elseif id == "LIGHTMETAL" then w = w / 2 end
+    return w
   end
 
   -- Real Showdown tiers (Heat Crash/Heavy Slam, identical formula):
@@ -572,7 +748,13 @@ return function(mod)
   -- else -> 20. (416/1024, 1075/1024 etc. rounding is a Gen 3-era
   -- hardware artifact this mod doesn't replicate -- the whole-percent
   -- breakpoints above match real Showdown's own modern implementation.)
-  registerPowerOverride("FLAIL", function(ctx)
+  -- Reversal (Phase 8, other bucket, added 2026-08-28, explicit user
+  -- directive to close the real remaining move-formula gaps): real,
+  -- confirmed Showdown fact -- Reversal and Flail share the IDENTICAL
+  -- real HP-fraction power table, just different flavor/type. Reuses
+  -- the exact same function rather than a second, possibly-drifting
+  -- copy.
+  local function flailPower(ctx)
     local hp, maxHp = currentAndMaxHP(ctx.user, ctx.gen2)
     local pct = 100 * hp / maxHp
     if pct <= 4 then return 200
@@ -581,6 +763,51 @@ return function(mod)
     elseif pct <= 34 then return 80
     elseif pct <= 67 then return 40
     else return 20 end
+  end
+  registerPowerOverride("FLAIL", flailPower)
+  registerPowerOverride("REVERSAL", flailPower)
+
+  -- Low Kick / Grass Knot: real Showdown TARGET-weight tiers (kg) --
+  -- confirmed a genuinely different real formula from Heat Crash/Heavy
+  -- Slam's own ratio above, not a duplicate: <10 -> 20, <25 -> 40,
+  -- <50 -> 60, <100 -> 80, <200 -> 100, else -> 120. Real games also
+  -- special-case Dynamax/Gigantamax targets (treated as maximum weight,
+  -- so always 120) -- this mod's own real Dynamax state IS queryable
+  -- (gigantamax/gimmick_dynamax.lua's own armState/transforms registry),
+  -- but wiring that cross-file check is deferred; every non-Dynamaxed
+  -- target (the overwhelming common case) is fully correct.
+  local function targetWeightPower(ctx)
+    local w = speciesWeightOf(ctx.target, ctx.gen2)
+    if not w then return nil end
+    if w < 10 then return 20
+    elseif w < 25 then return 40
+    elseif w < 50 then return 60
+    elseif w < 100 then return 80
+    elseif w < 200 then return 100
+    else return 120 end
+  end
+  registerPowerOverride("LOWKICK", targetWeightPower)
+  registerPowerOverride("GRASSKNOT", targetWeightPower)
+
+  -- Trump Card: real Showdown power scales with the move's OWN
+  -- remaining PP (read from the user's own moveset slot, right after
+  -- this use's own real PP deduction has already happened -- the same
+  -- point registerPowerOverride's own callback fires at, confirmed by
+  -- its own real call site: the formula reads power BEFORE computing
+  -- damage, but PP is spent by the native engine earlier still, at
+  -- move-selection time): 0 -> 200, 1 -> 80, 2 -> 60, 3 -> 50, else 40.
+  registerPowerOverride("TRUMPCARD", function(ctx)
+    local moves = ctx.gen2 and ctx.user.moves or (ctx.user.mon and ctx.user.mon.moves)
+    local pp
+    for _, mv in ipairs(moves or {}) do
+      if mv.id == "TRUMPCARD" then pp = mv.pp break end
+    end
+    if not pp then return nil end
+    if pp <= 0 then return 200
+    elseif pp == 1 then return 80
+    elseif pp == 2 then return 60
+    elseif pp == 3 then return 50
+    else return 40 end
   end)
 
   ------------------------------------------------------------------
@@ -621,6 +848,15 @@ return function(mod)
   local function stagesFor(battle, side)
     return ensureStageState(battle)[side]
   end
+  -- Exported (Phase 8, other bucket): the same real, mod-owned atk/def/
+  -- spa/spd stage bucket every existing stat-changing move/ability
+  -- already reads and writes through changeStage above -- Download/
+  -- Moody/Curious Medicine/Costar reuse it directly rather than a
+  -- second, possibly-drifting stage store. Scoped the same way Power
+  -- Trip's own header already documents this store's boundary: speed/
+  -- accuracy/evasion stay native/out of scope here, not newly narrowed
+  -- for this batch.
+  mod.exports.stagesFor = stagesFor
 
   -- "player"/"enemy", uniformly, regardless of generation. Gen 1's own
   -- BattleState:sideOf returns a side-record object (not a string,
@@ -632,6 +868,7 @@ return function(mod)
     if gen2 then return battle:sideOf(who) end
     return who.isPlayer and "player" or "enemy"
   end
+  mod.exports.sideOfWho = sideOfWho
 
   -- Power Trip (Part B Phase 5 Tier 1): real Showdown is 20 + 20*(sum of
   -- every POSITIVE stage across all 7 raiseable stats: atk/def/spa/spd/
@@ -678,6 +915,12 @@ return function(mod)
   local function rawStat(who, key, gen2)
     return gen2 and who.stats[key] or who.curStats[key]
   end
+  -- Exported (Phase 8, other bucket): Download/Beast Boost's own real
+  -- "compare/find the highest raw stat" both need this same accessor
+  -- the damage formula itself already uses -- "attack"/"defense"/"spa"/
+  -- "spd" are the real key strings, confirmed by this function's own
+  -- pre-existing call sites just below.
+  mod.exports.rawStat = rawStat
 
   local function badgeStatNameFor(statKey)
     if statKey == "spa" or statKey == "spd" then return "special" end
@@ -746,8 +989,12 @@ return function(mod)
   -- this same rule before ever reaching the native call, so a boss's
   -- speed/accuracy/evasion is protected exactly as completely as its
   -- attack/defense/spa/spd.
+  -- Real N-way check (2026-08-28): every enemy-side battler protected,
+  -- not just the literal battle.enemy object -- a boss fight WITH real
+  -- escorts (g9-Battle-Scene's own doubles/triples layouts) needs every
+  -- one of them covered, not just whichever mon happens to be primary.
   mod.exports.bossStatsDropBlocked = function(battle, who, delta)
-    return delta < 0 and battle ~= nil and who == battle.enemy
+    return delta < 0 and battle ~= nil and who ~= nil and battle:sideOf(who) == "enemy"
       and mod.exports.bossFightHas ~= nil and mod.exports.bossFightHas(battle, "statsDrop")
   end
 
@@ -792,9 +1039,76 @@ return function(mod)
   end
   mod.exports.statDropBlockedByAbility = statDropBlockedByAbility
 
+  -- Opportunist (Phase 8, other bucket): "copies the stat and stage
+  -- amount of any stat boost an OPPONENT gains, onto itself" -- real,
+  -- confirmed reactive copy, checked here (the one real choke point
+  -- every stage change in this mod already goes through, the same
+  -- reason Neutralizing Gas's own suppression lives inside abilityIdOf
+  -- itself rather than a later wrap) rather than as a separate dispatch
+  -- engine wrapping mod.exports.changeStage -- every earlier-loading
+  -- caller already captured a LOCAL reference to this exact function at
+  -- its own install time, so a later reassignment of mod.exports.
+  -- changeStage would never reach any of them, the same confirmed dead
+  -- end Neutralizing Gas's own header already documents.
+  --
+  -- Per-battle recursion guard: a copy is itself a stage change, so
+  -- without this an Opportunist holder on BOTH sides would ping-pong
+  -- forever. Real Showdown doesn't chain Opportunist copies either.
+  local opportunistGuard = setmetatable({}, { __mode = "k" })
+  local changeStageFwd -- forward-declared, assigned right after changeStage below
+  local function triggerOpportunist(battle, who, stat, delta, gen2)
+    if opportunistGuard[battle] then return end
+    local requestAdjacency = mod.exports.requestAdjacency
+    local abilityIdOf = mod.exports.abilityIdOf
+    if not (requestAdjacency and abilityIdOf) then return end
+    for _, foe in ipairs(requestAdjacency(battle, who, nil).enemies) do
+      if foe and (foe.hp or 0) > 0 and abilityIdOf(foe) == "OPPORTUNIST" then
+        opportunistGuard[battle] = true
+        local ok, err = pcall(changeStageFwd, battle, foe, stat, delta, false, gen2)
+        opportunistGuard[battle] = nil
+        if not ok then mod.log:warn("g9-battle-engine-beta: Opportunist copy failed: %s", tostring(err)) end
+      end
+    end
+  end
+
+  -- Mirror Armor (Phase 8, other bucket): "any effect that would lower
+  -- this Pokemon's stats instead lowers the stats of whoever caused the
+  -- effect." Real, confirmed redirect -- needs to know WHO caused this
+  -- specific drop, which changeStage's own signature never carried and
+  -- was never going to be threaded through its ~10+ existing call sites
+  -- (a genuine, rejected-as-too-invasive alternative) -- closed instead
+  -- via combat/interaction_memory.lua's own real "who did what to whom,
+  -- most recently" primitive (explicit user design), looked up here by
+  -- `who` alone. Per-battle recursion guard, same shape Opportunist's
+  -- own copy-trigger just below already uses, in case the redirect
+  -- target ALSO has Mirror Armor.
+  local mirrorArmorGuard = setmetatable({}, { __mode = "k" })
+  local function mirrorArmorRedirect(battle, who, gen2)
+    local abilityIdOf = mod.exports.abilityIdOf
+    local lastInteractionAgainst = mod.exports.lastInteractionAgainst
+    if not (abilityIdOf and lastInteractionAgainst and abilityIdOf(who) == "MIRRORARMOR") then
+      return nil
+    end
+    if mirrorArmorGuard[battle] then return nil end
+    local record = lastInteractionAgainst(battle, who)
+    local source = record and record.source
+    if not (source and source ~= who and (source.hp or 0) > 0) then return nil end
+    return source
+  end
+
   local function changeStage(battle, who, stat, delta, fromEnemy, gen2)
     if mod.exports.bossStatsDropBlocked(battle, who, delta) then
       return { romText(battle.data, "_NothingHappenedText", "Nothing happened!") }
+    end
+    if fromEnemy and delta < 0 then
+      local source = mirrorArmorRedirect(battle, who, gen2)
+      if source then
+        mirrorArmorGuard[battle] = true
+        local ok, result = pcall(changeStageFwd, battle, source, stat, delta, true, gen2)
+        mirrorArmorGuard[battle] = nil
+        if ok then return result end
+        mod.log:warn("g9-battle-engine-beta: Mirror Armor redirect failed: %s", tostring(result))
+      end
     end
     if fromEnemy and delta < 0 and statDropBlockedByAbility(who, gen2, stat) then
       return { Strings("%s's stats\nwon't go lower!", displayNameFor(battle, who, gen2)) }
@@ -827,6 +1141,13 @@ return function(mod)
     end
     stages[stat] = new
     who.hazeStatReset = nil
+    -- Opportunist trigger: fires on any GENUINE rise (delta computed
+    -- AFTER Contrary/Simple's own transform above, matching real
+    -- Opportunist's own "copies the stat and stage amount" wording --
+    -- it copies what actually happened, not the move's nominal intent).
+    if new > cur then
+      triggerOpportunist(battle, who, stat, new - cur, gen2)
+    end
     local label = STAT_LABEL[stat]
     local name = displayNameFor(battle, who, gen2)
     if delta >= 2 then
@@ -838,6 +1159,7 @@ return function(mod)
     end
     return { Strings("%s's\n%s\ngreatly fell!", name, label) }
   end
+  changeStageFwd = changeStage
   mod.exports.changeStage = changeStage
   -- Exported so sibling files (modern_movepool_stages.lua) can bridge
   -- Gen1/Gen2 move_effects run() calls the same way this file's own
@@ -932,8 +1254,17 @@ return function(mod)
       -- Growth: Attack +1 AND Sp. Atk +1 (Gen 5+ behavior; Gen 2-4 only
       -- raised Special/Sp.Atk -- Gen 5+ is the more modern, current rule
       -- and matches this ruleset's overall Gen 9-oriented direction).
-      local atkMsg = changeStage(n.battle, n.user, "attack", 1, false, n.gen2)
-      local spaMsg = changeStage(n.battle, n.user, "spa", 1, false, n.gen2)
+      -- Real, confirmed exception (a genuine pre-existing gap, fixed
+      -- here alongside Mega Sol since both hinge on the same "is this
+      -- mon's own sun in effect" question): DOUBLED to +2/+2 in harsh
+      -- sunlight -- real field sun, or Mega Sol's own personal
+      -- simulation of it (Phase 8, other bucket).
+      local abilityIdOf = mod.exports.abilityIdOf
+      local weather = mod.exports.currentWeather and mod.exports.currentWeather(n.battle, n.gen2)
+      local inSun = weather == "SUN" or (abilityIdOf and abilityIdOf(n.user) == "MEGASOL")
+      local stages = inSun and 2 or 1
+      local atkMsg = changeStage(n.battle, n.user, "attack", stages, false, n.gen2)
+      local spaMsg = changeStage(n.battle, n.user, "spa", stages, false, n.gen2)
       local out = {}
       for _, m in ipairs(atkMsg) do out[#out + 1] = m end
       for _, m in ipairs(spaMsg) do out[#out + 1] = m end
@@ -1068,6 +1399,17 @@ return function(mod)
     local special = category == "Special"
     local atkStat = special and "spa" or "attack"
     local defStat = special and "spd" or "defense"
+    -- Psyshock / Psystrike / Secret Sword (Phase 8, other bucket, added
+    -- 2026-08-28, explicit user directive -- real Gen 9 Showdown logic):
+    -- all three are real, confirmed exceptions -- Special-category
+    -- damage (their own attacking stat stays Sp. Atk, unaffected) that
+    -- reads the DEFENDER's Defense stat instead of Sp. Def. Checked by
+    -- move id directly (a fixed, small, real list -- Showdown itself
+    -- special-cases these three by id too, not a flag), same
+    -- established precedent as this file's own CRASH_DAMAGE_MOVES list.
+    if move.id == "PSYSHOCK" or move.id == "PSYSTRIKE" or move.id == "SECRETSWORD" then
+      defStat = "defense"
+    end
 
     local atk, dfn
     if crit and ctx.ruleset and ctx.ruleset.critIgnoresStages then
@@ -1076,8 +1418,23 @@ return function(mod)
     else
       local userStages = stagesFor(ctx.battle, sideOfWho(ctx.battle, user, gen2))
       local targetStages = stagesFor(ctx.battle, sideOfWho(ctx.battle, target, gen2))
-      atk = Stats.applyStage(rawStat(user, atkStat, gen2), userStages[atkStat] or 0)
-      dfn = Stats.applyStage(rawStat(target, defStat, gen2), targetStages[defStat] or 0)
+      -- Unaware (Phase 8, other bucket): "ignores OTHER Pokémon's stat
+      -- stage changes when calculating damage" -- real, confirmed
+      -- direction: the DEFENDER's own Unaware ignores the ATTACKER's
+      -- attack-stat boost (atkStage zeroed); the ATTACKER's own Unaware
+      -- ignores the DEFENDER's defense-stat boost (defStage zeroed).
+      -- Never ignores the holder's OWN stage in either direction, only
+      -- the opponent's -- confirmed via Showdown's own real ruling
+      -- (a +6 Swords Dance Unaware user still hits as hard as its own
+      -- boost allows, it just isn't stopped by a target's own Cotton
+      -- Guard).
+      local abilityIdOf = mod.exports.abilityIdOf
+      local atkStage = userStages[atkStat] or 0
+      local defStage = targetStages[defStat] or 0
+      if abilityIdOf and abilityIdOf(target) == "UNAWARE" then atkStage = 0 end
+      if abilityIdOf and abilityIdOf(user) == "UNAWARE" then defStage = 0 end
+      atk = Stats.applyStage(rawStat(user, atkStat, gen2), atkStage)
+      dfn = Stats.applyStage(rawStat(target, defStat, gen2), defStage)
       local atkBoost = badgeBoost(user, atkStat)
       if atkBoost then
         atk = math.floor(atk * (atkBoost.num or 9) / (atkBoost.den or 8))
@@ -1095,11 +1452,75 @@ return function(mod)
         atk = math.max(1, math.floor(atk / penalty.div))
       end
       if not crit then
+        -- Real bug fixed (2026-08-28): no caller anywhere in this mod
+        -- ever set opts.screens, so this always fell through to reading
+        -- target.lightScreen/target.reflect directly -- correct for Gen 1
+        -- (src/battle/MoveEffects.lua's own real Reflect/Light Screen
+        -- handlers set exactly those per-mon fields), but Gen 2's own
+        -- native screens are SIDE-keyed (self.screens[side].lightScreen/
+        -- .reflect, gen2/Battle.lua:2585-2595), never written onto a mon
+        -- at all -- meaning Reflect/Light Screen silently did NOTHING in
+        -- this mod's own modern damage formula on Gen 2, confirmed by
+        -- direct read (zero other references to opts.screens or
+        -- battle:screenActive anywhere in this mod). Fixed by computing
+        -- the real per-side answer via battle:screenActive (the exact
+        -- native choke point TryHit's own DamageStats already reads)
+        -- when gen2 is true, instead of trusting a per-mon field that
+        -- was never populated.
         local screens = opts.screens
-        if screens == nil and not opts.typeless then screens = target end
+        if screens == nil and not opts.typeless then
+          if gen2 and ctx.battle and ctx.battle.screenActive then
+            screens = {
+              lightScreen = ctx.battle:screenActive(target, false),
+              reflect = ctx.battle:screenActive(target, true),
+            }
+          else
+            screens = target
+          end
+        end
+        -- Infiltrator (Phase 7, prevent bucket): the attacker's screens
+        -- become fully transparent -- checked here, the one real choke
+        -- point both engines' screen reduction goes through, rather than
+        -- a second parallel check anywhere else.
+        local abilityIdOf = mod.exports.abilityIdOf
+        if screens and abilityIdOf and abilityIdOf(user) == "INFILTRATOR" then
+          screens = nil
+        end
         if screens then
           if special and screens.lightScreen then dfn = dfn * 2 end
           if not special and screens.reflect then dfn = dfn * 2 end
+        end
+      end
+    end
+
+    -- Vessel of Ruin / Beads of Ruin (Phase 8, other bucket): a real,
+    -- field-wide flat -25% to every OTHER active battler's Special
+    -- Attack / Special Defense (never the holder's own) -- a genuine
+    -- stat multiplier, not a stage change, so applied here directly
+    -- against the already-computed atk/dfn rather than through
+    -- changeStage's own stage-bucket (which only ever expresses -6..+6
+    -- relative deltas, not a flat scaling factor). Checked against
+    -- EVERY other active battler (ally or foe, matching the real "all
+    -- Pokémon other than this one" scope), applied only when the
+    -- relevant stat is the one actually in play this hit (Special
+    -- Attack for the attacker, Special Defense for the defender).
+    -- Sword of Ruin (Defense) / Tablets of Ruin (Attack), the other two
+    -- real members of this same quartet, aren't real ids in this
+    -- national_dex build at all -- nothing to wire for them.
+    do
+      local abilityIdOf = mod.exports.abilityIdOf
+      if abilityIdOf and special and atkStat == "spa" then
+        for _, mon in ipairs(mod.exports.allActiveBattlers and mod.exports.allActiveBattlers(ctx.battle) or {}) do
+          if mon and mon ~= user and abilityIdOf(mon) == "VESSELOFRUIN" then
+            atk = math.floor(atk * 0.75)
+            break
+          end
+        end
+        for _, mon in ipairs(mod.exports.allActiveBattlers and mod.exports.allActiveBattlers(ctx.battle) or {}) do
+          if mon and mon ~= target and abilityIdOf(mon) == "BEADSOFRUIN" then
+            dfn = math.floor(dfn * 0.75)
+            break
+          end
         end
       end
     end
@@ -1149,7 +1570,13 @@ return function(mod)
     d = math.floor(math.floor(d * power * atk / math.max(1, dfn)) / 50) + 2
 
     if crit then
-      d = math.floor(d * 1.5)
+      -- Sniper (Phase 8, other bucket): real 3x instead of 1.5x on the
+      -- ATTACKER's own crit -- checked live, not gated by a `data[id]`
+      -- table (this is a direct edit to the shared damage primitive,
+      -- same pattern Contrary/Simple/Unaware above already use).
+      local abilityIdOf = mod.exports.abilityIdOf
+      local critMult = (abilityIdOf and abilityIdOf(user) == "SNIPER") and 3.0 or 1.5
+      d = math.floor(d * critMult)
     end
 
     -- Random factor applied BEFORE the modifier chain/type effectiveness
@@ -1171,17 +1598,16 @@ return function(mod)
         end
       end
 
-      local targetTypes = curTypesOf(target, gen2)
-      -- Tera-Stellar defensive override: a no-op call (returns targetTypes
-      -- unchanged) for every target except a Stellar-Terastallized one --
-      -- see combat/modern_tera.lua's own header for why Stellar uniquely
-      -- keeps its ORIGINAL types defensively instead of the chosen-type
-      -- replacement every other Tera Type gets for free through
-      -- battle_forms's own curTypes/formTypes override.
-      if mod.exports.defensiveTypesOf then
-        targetTypes = mod.exports.defensiveTypesOf(ctx.battle, target, gen2, targetTypes)
-      end
-      mult = TypeChart.effectiveness(move.type, targetTypes)
+      -- resolvedTypeMult (this file's own header, just above curTypesOf)
+      -- folds in Tera-Stellar's defensive override AND the real
+      -- Foresight/Miracle Eye/Smack Down/Scrappy/Mind's Eye immunity
+      -- negation / Telekinesis immunity grant -- all resolved against
+      -- the real defender TYPE LIST before either the aggregate
+      -- multiplier or the real per-row TypeChart.rows() scaling below
+      -- ever runs, replacing what used to be a raw, negation-blind
+      -- TypeChart.effectiveness(...) call here.
+      local targetTypes
+      mult, targetTypes = resolvedTypeMult(ctx.battle, user, target, gen2, move.type)
       if mult == 0 then
         return 0, { crit = false, typeMult = 0 }
       end
@@ -1284,7 +1710,7 @@ return function(mod)
   mod.events:on("battle.turn_started", function(ev)
     local battle = ev and ev.battle
     if not battle then return end
-    for _, b in ipairs({ battle.player, battle.enemy }) do
+    for _, b in ipairs(mod.exports.allActiveBattlers and mod.exports.allActiveBattlers(battle) or { battle.player, battle.enemy }) do
       if b then b.damagedThisTurn = false end
     end
   end)

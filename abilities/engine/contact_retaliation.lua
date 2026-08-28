@@ -34,8 +34,11 @@ return function(mod, data)
     local move = ev and ev.move
     if not (target and user and move and (ev.damage or 0) > 0) then return end
     if abilityIdOf(target) ~= "IRONBARBS" then return end
-    local flags = moveFlags(move.id)
-    if flags and flags.contact then damageFraction(user, 1 / 8) end
+    -- Long Reach (Phase 7): the real "did this attacker's move make
+    -- contact" answer, ability-aware -- see abilities/engine/long_reach
+    -- .lua's own header.
+    local makesContact = mod.exports.makesContact
+    if makesContact and makesContact(move.id, user) then damageFraction(user, 1 / 8) end
   end)
 
   ------------------------------------------------------------------
@@ -94,8 +97,10 @@ return function(mod, data)
         local damp = mod.exports.anyBattlerHasDamp and ctx.battle
           and mod.exports.anyBattlerHasDamp(ctx.battle)
         if id == "AFTERMATH" and not damp then
-          local flags = ctx.move and moveFlags(ctx.move.id)
-          if flags and flags.contact then damageFraction(user, 1 / 4) end
+          local makesContact = mod.exports.makesContact
+          if makesContact and ctx.move and makesContact(ctx.move.id, user) then
+            damageFraction(user, 1 / 4)
+          end
         elseif id == "INNARDSOUT" then
           damageFlat(user, hpBefore)
         end

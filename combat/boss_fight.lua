@@ -32,14 +32,17 @@
 --                    directed effect (Soak et al); its own self-activated
 --                    kit (Protean, Color Change, a self-targeted Conversion)
 --                    is unaffected.
---   ability      -- NOT YET ENFORCED ANYWHERE: this mod has no ability-
---                    changing or ability-suppressing moves wired at all
---                    yet (Skill Swap, Worry Seed, Entrainment, Gastro Acid
---                    -- see the standing "g9 ability-suppression TODO").
---                    The flag is stored and readable, but there is
---                    nothing in this codebase today that would try to
---                    change a boss's ability in the first place, so this
---                    is an honest no-op until that system exists.
+--   ability      -- ENFORCED (2026-08-28): abilities/ability_dispatch
+--                    .lua's own mod.exports.setAbility -- the real "change
+--                    a mon's ability" primitive this flag was originally
+--                    reserved for -- refuses outright whenever the target
+--                    is battle.enemy and this flag is set. Applies equally
+--                    to every future ability-changing/copying move or
+--                    ability built on top of setAbility (Skill Swap, Worry
+--                    Seed, Entrainment, Gastro Acid, Trace, Mummy,
+--                    Wandering Spirit, Receiver, Power of Alchemy), since
+--                    none of them have any route to the boss's ability
+--                    that bypasses setAbility itself.
 --   dimensionLock, trickRoom, magicRoom, wonderRoom
 --                -- combat/trick_room.lua: room-move banning and
 --                    permanent-room application. See that file's own

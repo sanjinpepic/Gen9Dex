@@ -136,6 +136,15 @@ return function(mod)
     local n = normalize(a, b, c)
     local currentWeather = mod.exports.currentWeather
     local weather = currentWeather and currentWeather(n.battle, n.gen2)
+    -- Mega Sol (Phase 8, other bucket): its own real personal sun
+    -- simulation ("as if the weather were harsh sunlight") extends to
+    -- every real sun-conditional MOVE behavior this engine already
+    -- models, not just the Fire/Water damage multiplier -- Synthesis/
+    -- Moonlight/Morning Sun's own real 2/3-in-sun heal included.
+    local abilityIdOf = mod.exports.abilityIdOf
+    if weather ~= "SUN" and abilityIdOf and abilityIdOf(n.user) == "MEGASOL" then
+      weather = "SUN"
+    end
     local ok
     if weather == "SUN" then
       ok = healFraction(n.user, 2, 3)
@@ -480,7 +489,7 @@ return function(mod)
     local moveId = ev and ((ev.move and ev.move.id) or ev.moveId)
     if not (battle and moveId == "UPROAR") then return end
     if not (isGen2Battle and isGen2Battle(battle)) then return end
-    for _, mon in ipairs({ battle.player, battle.enemy }) do
+    for _, mon in ipairs(mod.exports.allActiveBattlers and mod.exports.allActiveBattlers(battle) or { battle.player, battle.enemy }) do
       if mon and mon.status == "sleep" then mon.status = nil end
     end
   end)

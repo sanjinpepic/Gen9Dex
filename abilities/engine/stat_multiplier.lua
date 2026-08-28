@@ -61,7 +61,12 @@ return function(mod, data)
   local function conditionMet(battle, mon, id, gen2)
     if UNCONDITIONAL[id] then return true end
     local wantWeather = WEATHER_COND[id]
-    if wantWeather then return currentWeather(battle, gen2) == wantWeather end
+    if wantWeather then
+      -- Air Lock/Cloud Nine (Phase 8, other bucket): nullifies the
+      -- weather-dependent boost too, real Showdown behavior.
+      if mod.exports.weatherNullified and mod.exports.weatherNullified(battle) then return false end
+      return currentWeather(battle, gen2) == wantWeather
+    end
     local wantTerrain = TERRAIN_COND[id]
     if wantTerrain then return battle.terrain == wantTerrain end
     if HP_HALF_COND[id] then
@@ -102,20 +107,93 @@ return function(mod, data)
   end
   mod.exports.statMultiplierFor = statMultiplierFor
 
+  ------------------------------------------------------------------
+  -- Protosynthesis / Quark Drive (Phase 8, other bucket): a real,
+  -- different SHAPE than every other ability above -- those all boost
+  -- one FIXED stat; these two boost whichever of the mon's own five
+  -- battle stats is currently HIGHEST, decided dynamically. Real
+  -- trigger: harsh sunlight (Protosynthesis) / Electric Terrain (Quark
+  -- Drive) -- Booster Energy, the real item-triggered alternative, is
+  -- NOT built (this ROM's own item roster, confirmed earlier this
+  -- phase via modern_items.lua's own header, has no such item at all).
+  -- Real persistence, honored here: once activated, the boost survives
+  -- the weather/terrain actually ending, lasting until the holder
+  -- itself switches out (mon.protosynthesisActive/mon.quarkDriveActive,
+  -- cleared on battle.battler_switched's own real `previous` field and
+  -- defensively on battle.started for every party member, so a flag
+  -- can never leak from an earlier battle into a fresh one via a
+  -- persistent save-file mon object).
+  ------------------------------------------------------------------
+  local PROTO_TERRA = { PROTOSYNTHESIS = "weather", QUARKDRIVE = "terrain" }
+  local HIGHEST_STAT_ORDER = { "attack", "defense", "specialAttack", "specialDefense", "speed" }
+  local PROTO_FLAG = { PROTOSYNTHESIS = "protosynthesisActive", QUARKDRIVE = "quarkDriveActive" }
+  -- Forward-declared: assigned right after Battle.battleStat is
+  -- captured below, so protoQuarkBoost's own "compare all five raw
+  -- stats" scan reads the TRUE native value -- never re-entering the
+  -- wrapped Battle:battleStat itself, which would double-apply this
+  -- same ability's own multiplier while still deciding whether to.
+  local nativeBattleStatFwd
+
+  local function protoQuarkActivate(battle, mon, id, gen2)
+    local flag = PROTO_FLAG[id]
+    if mon[flag] then return end
+    local triggered
+    if PROTO_TERRA[id] == "weather" then
+      triggered = not (mod.exports.weatherNullified and mod.exports.weatherNullified(battle))
+        and currentWeather(battle, gen2) == "SUN"
+    else
+      triggered = battle.terrain == "ELECTRIC"
+    end
+    if not triggered then return end
+    mon[flag] = true
+    battle:emit({ kind = "message",
+      text = (id == "PROTOSYNTHESIS" and "Protosynthesis" or "Quark Drive")
+        .. " activated, boosting its highest stat!" })
+  end
+
+  local function protoQuarkBoost(battle, mon, key)
+    local id = abilityIdOf(mon)
+    if not (id and PROTO_TERRA[id] and data[id]) then return 1 end
+    local gen2 = isGen2Battle and isGen2Battle(battle)
+    protoQuarkActivate(battle, mon, id, gen2)
+    if not mon[PROTO_FLAG[id]] then return 1 end
+    local best, bestVal = HIGHEST_STAT_ORDER[1], -math.huge
+    for _, statKey in ipairs(HIGHEST_STAT_ORDER) do
+      local v = nativeBattleStatFwd(battle, mon, statKey)
+      if v > bestVal then best, bestVal = statKey, v end
+    end
+    if key ~= best then return 1 end
+    return key == "speed" and 1.5 or 1.3
+  end
+
+  local function resetProtoQuark(mon)
+    if mon then mon.protosynthesisActive, mon.quarkDriveActive = nil, nil end
+  end
+  mod.events:on("battle.started", function(ev)
+    local battle = ev and ev.battle
+    if not battle then return end
+    for _, mon in ipairs(battle.party or {}) do resetProtoQuark(mon) end
+    for _, mon in ipairs(battle.enemyParty or {}) do resetProtoQuark(mon) end
+  end)
+  mod.events:on("battle.battler_switched", function(ev)
+    resetProtoQuark(ev and ev.previous)
+  end)
+
   -- Real Gen 2 rounding convention already established in this mod
   -- (combat/modern_combat_protect.lua's own Max Guard 25% scale-down:
   -- math.floor(x + 0.5)) -- matched here rather than a bare floor, so a
   -- x1.5/x1.25-shaped boost rounds the same way the rest of this mod
   -- already does.
   local nativeBattleStat = Battle.battleStat
+  nativeBattleStatFwd = function(battle, mon, key) return nativeBattleStat(battle, mon, key) end
   function Battle:battleStat(mon, key)
     local value = nativeBattleStat(self, mon, key)
-    local mult = statMultiplierFor(self, mon, key)
+    local mult = statMultiplierFor(self, mon, key) * protoQuarkBoost(self, mon, key)
     if mult ~= 1 then
       value = math.floor(value * mult + 0.5)
     end
     return value
   end
 
-  mod.log:info("g9-battle-engine-beta: stat_multiplier installed (14 abilities: CHLOROPHYLL, SWIFTSWIM, SANDRUSH, SLUSHRUSH, SOLARPOWER, SURGESURFER, DEFEATIST, FLAREBOOST, TOXICBOOST, ORICHALCUMPULSE, HUGEPOWER, PUREPOWER, GORILLATACTICS, QUICKFEET)")
+  mod.log:info("g9-battle-engine-beta: stat_multiplier installed (16 abilities: CHLOROPHYLL, SWIFTSWIM, SANDRUSH, SLUSHRUSH, SOLARPOWER, SURGESURFER, DEFEATIST, FLAREBOOST, TOXICBOOST, ORICHALCUMPULSE, HUGEPOWER, PUREPOWER, GORILLATACTICS, QUICKFEET, PROTOSYNTHESIS, QUARKDRIVE)")
 end

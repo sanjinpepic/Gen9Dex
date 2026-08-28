@@ -18,8 +18,26 @@
 -- multiplier effect, already wired in Phase 2
 -- (abilities/engine/damage_multiplier.lua) -- this file only adds their
 -- status_immunity half; nothing here duplicates that work.
+--
+-- COMATOSE (Phase 8, other bucket, added 2026-08-28): its own real
+-- national_dex record already carries a genuine
+-- {kind="status_immunity", status="any"} entry, confirmed by direct
+-- dump -- the same "any" value blockedStatusOf below already handles
+-- generically (Purifying Salt's own real shape), so this needed only
+-- the id added here, no new code. Its own SEPARATE real effect
+-- ("always treated as asleep -- can use Sleep Talk, unaffected by
+-- Yawn -- without actually losing turns") is a genuine `other`-kind
+-- clause this file doesn't cover -- honestly deferred: nothing in this
+-- mod currently lets a non-asleep mon use a Sleep-Talk-only move, and
+-- Comatose's own real dex list (Komala-only, a single-species gimmick)
+-- makes that a very narrow return for the work.
+-- SHIELDSDOWN (Phase 8, other bucket, added 2026-08-28): real, HP-
+-- gated (>=50%) immunity to every major status -- see this file's own
+-- engine header for why this one is hardcoded rather than read from a
+-- structured effect entry (national_dex's own record has none).
 return {
   INNERFOCUS = true, MAGMAARMOR = true, LIMBER = true, OWNTEMPO = true,
   PURIFYINGSALT = true, SWEETVEIL = true, VITALSPIRIT = true,
-  THERMALEXCHANGE = true, WATERVEIL = true, WATERBUBBLE = true,
+  THERMALEXCHANGE = true, WATERVEIL = true, WATERBUBBLE = true, COMATOSE = true,
+  SHIELDSDOWN = true,
 }

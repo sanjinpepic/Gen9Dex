@@ -100,6 +100,71 @@ return function(mod)
     return { allies = adjacency.allies or {}, enemies = adjacency.enemies or {} }
   end
 
+  ------------------------------------------------------------------
+  -- allActiveBattlers(battle): the real, N-way "every mon currently in
+  -- this battle" roster -- explicit user request (2026-08-28), the fix
+  -- for the ~26 sites across this mod that used to hardcode `{battle
+  -- .player, battle.enemy}` to mean "everyone in the battle," which was
+  -- only ever true for the native two-battler case and silently missed
+  -- battler #2/#3 the moment g9-Battle-Scene's own real doubles/triples
+  -- rosters (confirmed live this session) were in play. Built on the
+  -- SAME real primitive already answering this question for targeting
+  -- (requestAdjacency) rather than a second, parallel roster-discovery
+  -- mechanism -- {battle.player} + its own allies + its own enemies IS
+  -- everyone, since requestAdjacency's own contract already guarantees
+  -- "real roster, caster excluded" for both halves. Degrades correctly
+  -- to exactly {battle.player, battle.enemy} with zero wiring on the
+  -- native two-battler fallback (allies=empty, enemies={the other one}),
+  -- so every one of those ~26 call sites keeps its own existing alive-
+  -- ness/logic untouched -- only the iterable source changes.
+  mod.exports.allActiveBattlers = function(battle)
+    if not (battle and battle.player) then return {} end
+    local out = { battle.player }
+    local adjacency = mod.exports.requestAdjacency(battle, battle.player, nil)
+    for _, m in ipairs(adjacency.allies) do out[#out + 1] = m end
+    for _, m in ipairs(adjacency.enemies) do out[#out + 1] = m end
+    return out
+  end
+
+  ------------------------------------------------------------------
+  -- Battle:sideOf, made real N-way aware -- explicit user request
+  -- (2026-08-28), closing the exact gap this mod's own MULTI_BATTLE_HOOKS
+  -- .md already named: the native method is a hard binary (`(mon == self
+  -- .player) and "player" or "enemy"`), so any battler beyond the primary
+  -- pair got silently tagged "enemy" regardless of its real side --
+  -- confirmed to matter for real, live consumers of this exact method:
+  -- native dealDamage's own event tagging, and this mod's own hazards
+  -- switch-in code (combat/modern_hazards.lua calls battle:sideOf(mon)
+  -- directly).
+  --
+  -- Reads a plain per-mon tag, `mon.multiSide`, a real string ("player"/
+  -- "enemy") a battle-scene mod sets on the actual mon table when it
+  -- constructs that battler -- g9-Battle-Scene's own combat.lua now does
+  -- exactly this (Combat.newBattler). Falls through to the native binary
+  -- check when the tag is absent, so this is fully backward compatible:
+  -- a plain native battle (no scene mod tagging anything) behaves
+  -- identically to before. Gen 2 only -- g9-Battle-Scene (the one real
+  -- multi-battler consumer confirmed to exist) is itself Gen 2-only
+  -- (manifest.json: games = ["gen2"]); Gen 1's own BattleState:sideOf is
+  -- untouched, an honest, currently-moot gap (no Gen 1 multi-battler
+  -- caller exists to fix this for yet).
+  local Battle = require("src.battle.gen2.Battle")
+  local nativeSideOfMulti = Battle.sideOf
+  function Battle:sideOf(mon)
+    -- nil guard, checked before ever reaching the native ternary: the
+    -- native `(mon == self.player) and "player" or "enemy"` answers
+    -- "enemy" for a nil mon too (nil is never == self.player), a real,
+    -- pre-existing quirk that's harmless for every EXISTING caller (every
+    -- one of them already only ever calls sideOf with a real mon) but
+    -- would misclassify a genuinely absent setter/caster as enemy-side
+    -- for a NEW caller that passes one through unchecked -- "no mon, no
+    -- side" is the more correct answer, so it's short-circuited here
+    -- rather than trusted to the native fallback.
+    if not mon then return nil end
+    if mon.multiSide then return mon.multiSide end
+    return nativeSideOfMulti(self, mon)
+  end
+
   -- resolveMoveTargets(battle, caster, moveId, chosenTarget) -> array of
   -- real battlers, possibly empty. chosenTarget is whatever single mon
   -- the caller already has in hand -- the same thing it would otherwise
@@ -133,5 +198,5 @@ return function(mod)
     return out
   end
 
-  mod.log:info("g9-battle-engine-beta: move_targeting installed (resolveMoveTargets, not yet called by anything)")
+  mod.log:info("g9-battle-engine-beta: move_targeting installed (resolveMoveTargets, allActiveBattlers, N-way Battle:sideOf)")
 end
