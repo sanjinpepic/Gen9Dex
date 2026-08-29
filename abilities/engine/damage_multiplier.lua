@@ -365,16 +365,30 @@ return function(mod, data)
   -- before that multiplier is computed at all). See modern_combat.lua's
   -- own registerPostEffectivenessModifier header for the full grounding.
   ------------------------------------------------------------------
+  -- Real, confirmed bug fixed 2026-08-28 (Wonder-Guard-reachability
+  -- review): ctx.mult is TypeChart.effectiveness's own x10-scaled return
+  -- value (10=neutral, 20=2x, 5=0.5x -- see combat/modern_combat.lua's
+  -- own require("src.battle.TypeChart") and that module's own header).
+  -- All three checks below compared it against a 0..1-scaled `1.0`
+  -- instead -- Neuroforce/Filter-family's `> 1.0` was true for every
+  -- non-immune hit (a 0.5x-resisted hit reads mult=5, still > 1.0), so
+  -- both fired on EVERY hit instead of only super-effective ones;
+  -- Tinted Lens's `< 1.0` was FALSE for every real not-very-effective
+  -- hit (the smallest real non-zero value on this scale is 2, from a
+  -- quad-resist, never below 1.0), so it never fired at all. All three
+  -- abilities' own real core function was broken since this mod first
+  -- shipped them, not just unreachable for the newly-centralized
+  -- fixed-damage moves this review started from.
   registerPostEffectivenessModifier("neuroforce", 0, function(ctx)
     if abilityIdOf(ctx.user) ~= "NEUROFORCE" then return 1.0 end
-    if not (ctx.mult and ctx.mult > 1.0) then return 1.0 end
+    if not (ctx.mult and ctx.mult > 10) then return 1.0 end
     local effects = multiplierEffects(ctx.user, "damage_dealt_multiplier")
     return (effects and effects[1] and effects[1].factor) or 1.0
   end)
 
   registerPostEffectivenessModifier("tinted_lens", 0, function(ctx)
     if abilityIdOf(ctx.user) ~= "TINTEDLENS" then return 1.0 end
-    if not (ctx.mult and ctx.mult > 0 and ctx.mult < 1.0) then return 1.0 end
+    if not (ctx.mult and ctx.mult > 0 and ctx.mult < 10) then return 1.0 end
     local effects = multiplierEffects(ctx.user, "damage_dealt_multiplier")
     return (effects and effects[1] and effects[1].factor) or 1.0
   end)
@@ -384,7 +398,7 @@ return function(mod, data)
   registerPostEffectivenessModifier("resist_super_effective_taken", 0, function(ctx)
     local id = abilityIdOf(ctx.target)
     if not (id and TAKEN_SUPER_EFFECTIVE[id]) then return 1.0 end
-    if not (ctx.mult and ctx.mult > 1.0) then return 1.0 end
+    if not (ctx.mult and ctx.mult > 10) then return 1.0 end
     local effects = multiplierEffects(ctx.target, "damage_taken_multiplier")
     return (effects and effects[1] and effects[1].factor) or 1.0
   end)

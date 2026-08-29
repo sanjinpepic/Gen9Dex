@@ -88,9 +88,8 @@ return function(mod)
   local moveById = nationalDex.exports.moveById
   local moveFlags = nationalDex.exports.moveFlags
   local changeStage = mod.exports.changeStage
-  local registerPostEffectivenessModifier = mod.exports.registerPostEffectivenessModifier
   local displayNameFor = mod.exports.displayNameFor
-  assert(changeStage and registerPostEffectivenessModifier and displayNameFor,
+  assert(changeStage and displayNameFor,
     "modern_status_volatiles: modern_combat.lua must load first")
 
   local function hpOf(mon) return (mon.mon or mon) end

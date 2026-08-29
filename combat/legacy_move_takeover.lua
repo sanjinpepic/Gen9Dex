@@ -65,6 +65,32 @@
 -- and Counter's own real category-based (not Gen 1's authentic-but-
 -- outdated type-based) rule, via a whole-registry `counterable` bulk
 -- patch rather than touching the native dispatcher.
+--
+-- EXTENDED AGAIN 2026-08-28, same day, "review abilities similar to
+-- these" (following the Magic Guard full-audit): confirmed EVERY move
+-- in this file bypassed Wonder Guard entirely -- registerPostEffectivenessModifier's
+-- own chain (combat/modern_combat.lua, Wonder Guard/Filter/Solid Rock/
+-- Prism Armor/Tinted Lens/Neuroforce/Tera Shell's shared real primitive)
+-- lives ONLY inside computeModernDamage's own internal formula branch,
+-- which none of these fixed-damage/OHKO moves ever call (they compute
+-- their own number and hand it straight to routeThroughBattleDamage
+-- instead). Fixed via two new exports from modern_combat.lua:
+-- `resolvedTypeMult` (the real, fully-resolved defender type multiplier,
+-- also now folding in a SEPARATE confirmed dead-code bug this same
+-- review found -- Foresight/Miracle Eye/Smack Down/Scrappy/Mind's Eye's
+-- own real immunity negation and Telekinesis's own real immunity grant
+-- were unreachable even for NORMAL-formula moves, see that file's own
+-- header) and `applyPostEffectivenessModifiers` (an explicit-allow-list
+-- runner over that same chain -- ONLY Wonder Guard's own entry applies
+-- to a fixed-damage move in real Showdown, confirmed via Bulbapedia/
+-- Smogon sourcing: Filter/Solid Rock/etc. are SCALING modifiers a fixed
+-- amount never receives). Also fixed alongside it: Final Gambit had NO
+-- type-immunity check at all before this pass -- a real, confirmed bug
+-- (unconditional self-faint even against a Fighting-immune Ghost-type).
+-- Gen 2's own dealDamage wrap gets Wonder Guard's gate but NOT the
+-- negation half -- a real, honestly-flagged, structural gap (see that
+-- section's own comment) matching Magic Guard's own documented Gen 2
+-- gaps in scope and cause.
 return function(mod)
   local Runtime = require("src.mods.Runtime")
   local TypeChart = require("src.battle.TypeChart")
@@ -85,6 +111,43 @@ return function(mod)
     return targetTypes and TypeChart.effectiveness(moveType, targetTypes) == 0
   end
 
+  -- Real, fully-resolved type multiplier for one of these fixed-damage/
+  -- OHKO moves -- routes through combat/modern_combat.lua's own
+  -- `resolvedTypeMult` (added 2026-08-28, Wonder-Guard-reachability
+  -- review) instead of the raw `typeImmune` helper above, so Foresight/
+  -- Miracle Eye/Smack Down/Scrappy/Mind's Eye's real immunity negation
+  -- and Telekinesis's real immunity grant both apply here exactly like
+  -- they do for every normal-formula move, not just a bare natural-
+  -- type-chart lookup. Falls back to the raw `typeImmune` shape (mult
+  -- 0 or 10) only if modern_combat.lua genuinely hasn't loaded yet --
+  -- shouldn't happen given real load order, but this file has no hard
+  -- `assert` on that export and shouldn't crash boot if it's ever
+  -- missing.
+  local function resolvedMult(battle, user, target, gen2, moveType, targetTypesFallback)
+    local resolvedTypeMult = mod.exports.resolvedTypeMult
+    if resolvedTypeMult then
+      return resolvedTypeMult(battle, user, target, gen2, moveType)
+    end
+    return typeImmune(moveType, targetTypesFallback) and 0 or 10
+  end
+
+  -- Wonder Guard's own real hard gate (blocks anything not super
+  -- effective, fixed-damage/OHKO moves included -- confirmed real,
+  -- Shedinja's own textbook Psywave/Fissure/Metal Burst immunity) --
+  -- the ONLY entry from computeModernDamage's own postEffectivenessModifiers
+  -- chain that real Showdown applies to these moves; see
+  -- applyPostEffectivenessModifiers's own header in modern_combat.lua for
+  -- why Filter/Solid Rock/Tinted Lens/Neuroforce/Tera Shell are
+  -- deliberately NOT included here.
+  local function wonderGuardAdjust(battle, user, target, move, mult, gen2, dmg)
+    local applyPostEffectivenessModifiers = mod.exports.applyPostEffectivenessModifiers
+    if not applyPostEffectivenessModifiers then return dmg end
+    return applyPostEffectivenessModifiers({
+      battle = battle, user = user, target = target, move = move,
+      mult = mult, gen2 = gen2, damage = dmg,
+    }, { "wonderguard" })
+  end
+
   ------------------------------------------------------------------
   -- GEN 1
   ------------------------------------------------------------------
@@ -100,8 +163,8 @@ return function(mod)
       -- immuneMsg helper this same file (MoveEffects.lua) already uses
       -- for OHKO_EFFECT's own real immunity check -- level/hp are the
       -- ones nested under .mon, not curTypes.
-      local targetTypes = ctx.target.curTypes
-      if typeImmune(ctx.move.type, targetTypes) then
+      local mult = resolvedMult(ctx.battle, ctx.user, ctx.target, false, ctx.move.type, ctx.target.curTypes)
+      if mult == 0 then
         return 0, { crit = false, typeMult = 0 }
       end
       local dmg
@@ -117,6 +180,7 @@ return function(mod)
       else
         dmg = math.max(1, math.floor(ctx.move.power or 0)) -- real fallback, matches native EFFECT_STATIC_DAMAGE's own shape
       end
+      dmg = wonderGuardAdjust(ctx.battle, ctx.user, ctx.target, ctx.move, mult, false, dmg)
       return routeThroughBattleDamage(ctx.battle, ctx.user, ctx.target, ctx.move, dmg,
         { crit = false, typeMult = 10 }, false)
     end
@@ -125,11 +189,12 @@ return function(mod)
   local superFangRecord = MoveEffects.full and MoveEffects.full.SUPER_FANG_EFFECT
   if superFangRecord then
     superFangRecord.chooseDamage = function(ctx)
-      local targetTypes = ctx.target.curTypes
-      if typeImmune(ctx.move.type, targetTypes) then
+      local mult = resolvedMult(ctx.battle, ctx.user, ctx.target, false, ctx.move.type, ctx.target.curTypes)
+      if mult == 0 then
         return 0, { crit = false, typeMult = 0 }
       end
       local dmg = math.max(1, math.floor((ctx.target.mon.hp or 1) / 2))
+      dmg = wonderGuardAdjust(ctx.battle, ctx.user, ctx.target, ctx.move, mult, false, dmg)
       return routeThroughBattleDamage(ctx.battle, ctx.user, ctx.target, ctx.move, dmg,
         { crit = false, typeMult = 10 }, false)
     end
@@ -144,8 +209,8 @@ return function(mod)
     -- user is ABOVE the target; fails outright (not just "misses") if
     -- the target is a higher level, checked ahead of any roll.
     ohkoRecord.gate = function(ctx)
-      local blocked = TypeChart.effectiveness(ctx.move.type, ctx.target.curTypes) == 0
-      if blocked then
+      local mult = resolvedMult(ctx.battle, ctx.user, ctx.target, false, ctx.move.type, ctx.target.curTypes)
+      if mult == 0 then
         local name = ctx.target.isPlayer and ctx.target.name or Strings("Enemy %s", ctx.target.name)
         return false, romText(ctx.battle.data, "_DoesntAffectMonText",
           "It doesn't affect\n%s!", name)
@@ -158,7 +223,9 @@ return function(mod)
       return true
     end
     ohkoRecord.chooseDamage = function(ctx)
-      return routeThroughBattleDamage(ctx.battle, ctx.user, ctx.target, ctx.move, 65535,
+      local mult = resolvedMult(ctx.battle, ctx.user, ctx.target, false, ctx.move.type, ctx.target.curTypes)
+      local dmg = wonderGuardAdjust(ctx.battle, ctx.user, ctx.target, ctx.move, mult, false, 65535)
+      return routeThroughBattleDamage(ctx.battle, ctx.user, ctx.target, ctx.move, dmg,
         { crit = false, typeMult = 10, ohko = true }, false)
     end
   end
@@ -210,6 +277,30 @@ return function(mod)
         damage = math.max(1, math.floor((attacker.level or 1)
           * (self.random(101) + 50) / 100))
       end
+      -- Wonder Guard's own real hard gate (2026-08-28, Wonder-Guard-
+      -- reachability review). NOT re-checking plain type immunity here
+      -- -- native Gen 2 already resolved that BEFORE ever calling
+      -- dealDamage (this file's own header, "Gen 2's own native fixed-
+      -- damage type-immunity check ... is ALREADY correct") -- so
+      -- resolvedMult below feeds Wonder Guard's super-effective check
+      -- only. Real, confirmed, honestly-flagged gap left open: that
+      -- native pre-check has no knowledge of this mod's own Foresight/
+      -- Miracle Eye/Smack Down/Scrappy/Mind's Eye negation fields, so a
+      -- Scrappy user's Super Fang/Seismic-Toss-family hit against a
+      -- Ghost-type on GEN 2 specifically still wrongly whiffs at the
+      -- native layer before this wrap ever runs -- Gen 1's own
+      -- equivalent (this file's own MoveEffects.chooseDamage overrides
+      -- above) does NOT have this gap, since THIS mod owns that gate
+      -- directly there. Same class of gap as Magic Guard's own
+      -- documented Gen 2 recoil/sandstorm-chip gaps (abilities/engine/
+      -- damage_immunity.lua's own header) -- no clean extension point
+      -- inside Gen 2's native pre-dealDamage accuracy/immunity check
+      -- without touching gen1recomp-dev's own source, which this mod
+      -- never does.
+      local resolvedTypeMult = mod.exports.resolvedTypeMult
+      local mult = resolvedTypeMult and resolvedTypeMult(self, attacker, defender, true, opts.move.type)
+        or (typeImmune(opts.move.type, defender.types) and 0 or 10)
+      damage = wonderGuardAdjust(self, attacker, defender, opts.move, mult, true, damage)
       local adjusted, info = routeThroughBattleDamage(self, attacker, defender,
         opts.move, damage, { crit = false, typeMult = 10, ohko = effect == "EFFECT_OHKO" }, true)
       return nativeDealDamage(self, attacker, defender, adjusted, opts)
@@ -249,13 +340,15 @@ return function(mod)
     local moveId = ctx.move and ctx.move.id
     if moveId ~= "SHEERCOLD" then return next(ctx) end
     local isGen2Battle = mod.exports.isGen2Battle
-    local curTypesOf = mod.exports.curTypesOf
     local gen2 = isGen2Battle and ctx.battle and isGen2Battle(ctx.battle)
+    local curTypesOf = mod.exports.curTypesOf
     local targetTypes = curTypesOf and curTypesOf(ctx.target, gen2)
-    if typeImmune(ctx.move.type, targetTypes) then
+    local mult = resolvedMult(ctx.battle, ctx.user, ctx.target, gen2, ctx.move.type, targetTypes)
+    if mult == 0 then
       return 0, { crit = false, typeMult = 0 }
     end
-    return 65535, { crit = false, typeMult = 10, ohko = true }
+    local dmg = wonderGuardAdjust(ctx.battle, ctx.user, ctx.target, ctx.move, mult, gen2, 65535)
+    return dmg, { crit = false, typeMult = 10, ohko = true }
   end, 1)
 
   ------------------------------------------------------------------
@@ -268,16 +361,35 @@ return function(mod)
   -- the "battle.damage" chain, so Protect/type-immunity above this
   -- still correctly refuse the whole thing, self-faint included -- a
   -- blocked Final Gambit costs nothing).
+  --
+  -- Real type-immunity check ADDED 2026-08-28 (Wonder-Guard-reachability
+  -- review): Final Gambit is a real FIGHTING-type move (national_dex's
+  -- own move data, confirmed) -- a Ghost-type target is naturally immune
+  -- to Fighting, and real Bulbapedia sourcing confirms the user does NOT
+  -- faint when the move fails this way ("If Final Gambit doesn't hit the
+  -- opponent due to missing, type immunity, or protection, ... the user
+  -- will not faint"). The original version here had NO type check at
+  -- all -- a real, confirmed bug (unconditional self-faint + damage
+  -- even against a Ghost-type) fixed alongside Wonder Guard's own gate.
   ------------------------------------------------------------------
   mod.hooks:wrap("battle.damage", function(next, ctx)
     local moveId = ctx.move and ctx.move.id
     if moveId ~= "FINALGAMBIT" then return next(ctx) end
+    local isGen2Battle = mod.exports.isGen2Battle
+    local gen2 = isGen2Battle and ctx.battle and isGen2Battle(ctx.battle)
+    local curTypesOf = mod.exports.curTypesOf
+    local targetTypes = curTypesOf and curTypesOf(ctx.target, gen2)
+    local mult = resolvedMult(ctx.battle, ctx.user, ctx.target, gen2, ctx.move.type, targetTypes)
+    if mult == 0 then
+      return 0, { crit = false, typeMult = 0 }
+    end
     local user = ctx.user
     local m = user.mon or user
     local hp = m.hp or 0
     if hp <= 0 then return 0, { crit = false, typeMult = 0 } end
+    local dmg = wonderGuardAdjust(ctx.battle, ctx.user, ctx.target, ctx.move, mult, gen2, hp)
     m.hp = 0
-    return hp, { crit = false, typeMult = 10 }
+    return dmg, { crit = false, typeMult = 10 }
   end, 1)
 
   ------------------------------------------------------------------
@@ -285,12 +397,29 @@ return function(mod)
   -- identical real formula, halving the target's CURRENT hp (floored,
   -- minimum 1) -- confirmed the same real fixed-damage shape, just two
   -- different move ids/generations for the identical mechanic.
+  --
+  -- Type-immunity/Wonder-Guard check added 2026-08-28 for consistency
+  -- with every other move in this file (Wonder-Guard-reachability
+  -- review) -- low real-world impact (Fairy/Dark, these moves' real
+  -- types, have no natural 0x immunity anywhere in the current type
+  -- chart, confirmed), but a genuinely typed damaging move should still
+  -- resolve type interactions the same real way every other one here
+  -- does, not skip the check just because it happens to rarely matter.
   ------------------------------------------------------------------
   mod.hooks:wrap("battle.damage", function(next, ctx)
     local moveId = ctx.move and ctx.move.id
     if moveId ~= "NATURESMADNESS" and moveId ~= "RUINATION" then return next(ctx) end
+    local isGen2Battle = mod.exports.isGen2Battle
+    local gen2 = isGen2Battle and ctx.battle and isGen2Battle(ctx.battle)
+    local curTypesOf = mod.exports.curTypesOf
+    local targetTypes = curTypesOf and curTypesOf(ctx.target, gen2)
+    local mult = resolvedMult(ctx.battle, ctx.user, ctx.target, gen2, ctx.move.type, targetTypes)
+    if mult == 0 then
+      return 0, { crit = false, typeMult = 0 }
+    end
     local m = ctx.target.mon or ctx.target
     local dmg = math.max(1, math.floor((m.hp or 1) / 2))
+    dmg = wonderGuardAdjust(ctx.battle, ctx.user, ctx.target, ctx.move, mult, gen2, dmg)
     return dmg, { crit = false, typeMult = 10 }
   end, 1)
 
@@ -345,5 +474,7 @@ return function(mod)
     .. "(SEISMICTOSS, NIGHTSHADE, DRAGONRAGE, SONICBOOM, PSYWAVE, SUPERFANG, "
     .. "FISSURE/GUILLOTINE/HORNDRILL centralized through battle.damage; SHEERCOLD, "
     .. "FINALGAMBIT, NATURESMADNESS/RUINATION built fresh; COUNTER's own real "
-    .. "counterable flag bulk-patched)")
+    .. "counterable flag bulk-patched; Wonder Guard's real hard gate now reachable "
+    .. "for all of the above via resolvedTypeMult/applyPostEffectivenessModifiers, "
+    .. "FINALGAMBIT's missing type-immunity check fixed alongside it)")
 end

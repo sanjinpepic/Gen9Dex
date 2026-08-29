@@ -28,7 +28,17 @@ return function(mod, data)
     if ignoreAbility == "MOLDBREAKER" or ignoreAbility == "TERAVOLT" or ignoreAbility == "TURBOBLAZE" then
       return 1.0
     end
-    if ctx.mult and ctx.mult > 1.0 then return 1.0 end
+    -- Real, confirmed bug fixed 2026-08-28 (Wonder-Guard-reachability
+    -- review): ctx.mult is TypeChart.effectiveness's own return value,
+    -- confirmed x10-SCALED (10=neutral, 20=2x, 5=0.5x, own header:
+    -- "Returns the combined x10 multiplier") -- comparing it against
+    -- `1.0` meant this branch was true for literally every non-immune
+    -- hit (even a 0.5x-resisted one reads as mult=5, still > 1.0),
+    -- making this ability's own real core function -- "only super
+    -- effective hits deal damage" -- completely non-functional since
+    -- this mod first shipped it. The real neutral baseline on this
+    -- scale is 10, not 1.0.
+    if ctx.mult and ctx.mult > 10 then return 1.0 end
     return 0
   end)
 

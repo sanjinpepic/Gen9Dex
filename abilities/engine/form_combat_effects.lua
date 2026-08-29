@@ -230,7 +230,21 @@ return function(mod, data)
     local m = ctx.target.mon or ctx.target
     local maxHp = m.stats and m.stats.hp
     if not (maxHp and maxHp > 0 and (m.hp or 0) >= maxHp) then return 1.0 end
-    if ctx.mult and ctx.mult > 1.0 then return 0.5 / ctx.mult end
+    -- Real, confirmed bug fixed 2026-08-28 (Wonder-Guard-reachability
+    -- review): ctx.mult is x10-scaled (10=neutral -- see combat/
+    -- modern_combat.lua's own TypeChart usage), not 0..1-scaled, so
+    -- BOTH the threshold and the return value here were wrong. The
+    -- threshold: `> 1.0` fired on every non-immune hit, not just a
+    -- genuinely super-effective one. The return value: by the time this
+    -- runs, `d` (the running damage total) has ALREADY been scaled by
+    -- the real per-row type multiplier (computeModernDamage's own
+    -- TypeChart.rows() loop, earlier in the same function) -- so
+    -- capping the EFFECTIVE multiplier at a real 0.5x needs a
+    -- correction factor of 0.5 / (ctx.mult / 10), i.e. 5 / ctx.mult, not
+    -- the old 0.5 / ctx.mult (which for a real 2x hit, ctx.mult=20,
+    -- worked out to 0.025x -- capping a super-effective hit down to
+    -- 1/40th damage instead of the real, intended half).
+    if ctx.mult and ctx.mult > 10 then return 5 / ctx.mult end
     return 1.0
   end)
 

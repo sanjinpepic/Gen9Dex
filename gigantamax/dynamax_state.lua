@@ -1,6 +1,10 @@
--- Dynamax Level (per-save, 0-10) and Gigantamax Factor (per-mon boolean)
--- storage, plus a public mod.exports API for other mods to read AND
--- write both. Explicit user scope (2026-08-20): we do not decide gimmick
+-- Dynamax Level (per-save, 0-10 -- the player's own account-wide
+-- progression), Dynamax Level (per-mon, 0-10 -- a specific Pokemon's own
+-- fixed level, added 2026-08-28 for NPC trainer definitions, a genuinely
+-- different real concept from the per-save one, see that section's own
+-- header below), and Gigantamax Factor (per-mon boolean) storage, plus a
+-- public mod.exports API for other mods to read AND write all three.
+-- Explicit user scope (2026-08-20): we do not decide gimmick
 -- activation, we do not write HP, and we do not decide WHEN a value
 -- changes -- battle_forms already owns Dynamax/Gigantamax/Mega/Tera/
 -- Z-Move activation and mechanics end to end (confirmed via direct
@@ -64,6 +68,33 @@ return function(mod, gmaxData)
     return mod.exports.setDynamaxLevel(mod.exports.getDynamaxLevel() + (tonumber(amount) or 0))
   end
 
+  -- ---- Dynamax Level: per-mon, 0-10 (a DIFFERENT real concept from the
+  -- per-save one above) ----
+  -- Added 2026-08-28 for trainers/custom_trainer_registry.lua's own real
+  -- need: a specific NPC trainer's own Pokemon has its OWN fixed Dynamax
+  -- Level in the actual games (real Sword/Shield gym-leader/story
+  -- Dynamax battles), a genuinely different real value from the
+  -- player's own account-wide progression tracked above -- not a
+  -- narrower/duplicate version of it. Same bare-field storage pattern
+  -- mon.gigantamaxFactor already established (a real `nil` when unset,
+  -- not a sentinel), for the same save/box/trade round-trip reasons.
+  --
+  -- Read API: mod.exports.getMonDynamaxLevel(mon) -> integer 0-10, or
+  -- nil if never set for this mon.
+  mod.exports.getMonDynamaxLevel = function(mon)
+    if not mon or mon.dynamaxLevel == nil then return nil end
+    return clampLevel(mon.dynamaxLevel)
+  end
+
+  -- Write API: mod.exports.setMonDynamaxLevel(mon, n) -> the clamped
+  -- value actually stored, or false if refused (no mon given).
+  mod.exports.setMonDynamaxLevel = function(mon, level)
+    if not mon then return false end
+    local clamped = clampLevel(level)
+    mon.dynamaxLevel = clamped
+    return clamped
+  end
+
   -- ---- Gigantamax Factor: per-mon boolean ----
   -- Read API: mod.exports.getGigantamaxFactor(mon) -> true/false.
   mod.exports.getGigantamaxFactor = function(mon)
@@ -112,5 +143,6 @@ return function(mod, gmaxData)
     return base ~= nil and gmaxBaseSpecies[base] == true
   end
 
-  mod.log:info("galar_gmax_dex: dynamax_state installed (Dynamax Level 0-10, Gigantamax Factor -- storage + API only, no activation/HP)")
+  mod.log:info("galar_gmax_dex: dynamax_state installed (Dynamax Level 0-10 per-save AND "
+    .. "per-mon, Gigantamax Factor -- storage + API only, no activation/HP)")
 end
