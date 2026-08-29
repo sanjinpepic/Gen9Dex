@@ -1451,6 +1451,19 @@ return function(mod)
       if penalty and penalty.stat == atkStat and not user.hazeStatReset then
         atk = math.max(1, math.floor(atk / penalty.div))
       end
+      -- Held-item stat multipliers (Choice Band/Specs, Assault Vest,
+      -- Eviolite, Light Ball, Thick Club, Deep Sea Tooth/Scale, Metal
+      -- Powder) -- combat/modern_held_items_phase2.lua's own real
+      -- primitive, consulted here via a lazy export lookup (that file
+      -- loads AFTER this one, so it can't be a plain local call) rather
+      -- than inlined directly, keeping every held-item detail in that
+      -- file's own single place. A nil export (that file not loaded)
+      -- leaves atk/dfn untouched, same graceful-degradation shape
+      -- Delta Stream's own effectivenessOverrideFor already uses.
+      local applyHeldItemStatMultiplier = mod.exports.applyHeldItemStatMultiplier
+      if applyHeldItemStatMultiplier then
+        atk, dfn = applyHeldItemStatMultiplier(ctx, user, target, atkStat, defStat, atk, dfn)
+      end
       if not crit then
         -- Real bug fixed (2026-08-28): no caller anywhere in this mod
         -- ever set opts.screens, so this always fell through to reading

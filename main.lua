@@ -1935,6 +1935,34 @@ return function(mod)
   local installModernItems = loadSibling(mod, "combat/modern_items.lua")
   installModernItems(mod)
 
+  -- New item-implementation phase (2026-08-28, explicit directive: "we
+  -- override item behavior for native items, always, imperative, in
+  -- terms of combat"). Phase 1: auditing/overriding the held items Gen 2
+  -- already has real ROM-driven combat behavior for, against real
+  -- Pokemon Showdown Gen 9 logic -- see that file's own header for the
+  -- full per-item grounding. Needs modern_items.lua's own itemOf export
+  -- (just above), modern_combat.lua's registerCritStageModifier, and
+  -- accuracy_multiplier.lua's registerAccuracyModifier (both loaded
+  -- earlier).
+  local installModernHeldItems = loadSibling(mod, "combat/modern_held_items.lua")
+  installModernHeldItems(mod)
+
+  -- Held items Phase 2 (2026-08-28, explicit directive: "start with non
+  -- consumables first"): Choice Band/Specs/Scarf, Life Orb, Assault
+  -- Vest, Eviolite, Expert Belt, Rocky Helmet, Black Sludge, Light Clay,
+  -- Quick Powder, Iron Ball, Lagging Tail, Full Incense, Deep Sea Tooth/
+  -- Scale, Soul Dew, the three Sinnoh orbs (all newly registered items,
+  -- no cart precedent), plus Light Ball/Thick Club/Metal Powder's own
+  -- previously-unwired real native combat effect. Also fixes a real
+  -- dead-code bug in modern_held_items.lua's own Phase 1 type-boost fix
+  -- -- see that file's own header for the correction. Needs modern_items
+  -- .lua's itemOf (just above), modern_combat.lua's
+  -- registerDamageModifier/registerPostEffectivenessModifier/
+  -- resolvedTypeMult, and combat/turn_order.lua's own
+  -- registerPriorityModifier (loaded well above).
+  local installModernHeldItemsPhase2 = loadSibling(mod, "combat/modern_held_items_phase2.lua")
+  installModernHeldItemsPhase2(mod)
+
   -- Phase 8 ("other" bucket): Skill Link -- Gen 1 only, see that file's
   -- own header for the real scope split.
   local skillLinkData = loadSibling(mod, "abilities/data/skill_link.lua")
@@ -2075,6 +2103,22 @@ return function(mod)
   -- engine-level mechanism for the latter, confirmed this session).
   local installGen2WideScene = loadSibling(mod, "combat/gen2_wide_scene.lua")
   installGen2WideScene(mod)
+
+  -- ------- Custom trainer roster registration API -------
+  -- mod.exports.registerTrainer("CLASS:MEMBERID", party) -- explicit user
+  -- directive, 2026-08-28. Needs stats/engine_modern_stats.lua's own
+  -- ModernStats export (Phase "stats", well above), stats/
+  -- trainer_modern_stats.lua's registerTrainerStatsProvider, gigantamax/
+  -- tera_state.lua's setTeraType and gigantamax/dynamax_state.lua's
+  -- setGigantamaxFactor/setMonDynamaxLevel (all loaded above), and
+  -- combat/modern_combat.lua's isGen2Battle. See that file's own header
+  -- for the full grounding (real trainer identity, the three real
+  -- integration points, real defaults). Placed here, after everything
+  -- else except the deliberately-last Phase 16 below -- this file
+  -- touches no :update loop, so ordering relative to Phase 16 doesn't
+  -- matter either way, but there's no reason to risk it.
+  local installCustomTrainerRegistry = loadSibling(mod, "trainers/custom_trainer_registry.lua")
+  installCustomTrainerRegistry(mod)
 
   -- ------- Phase 16: move-availability gate (0-PP-style blocking) -------
   -- Installed LAST, deliberately: wraps BattleState:update on both
